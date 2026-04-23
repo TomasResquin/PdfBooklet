@@ -37,7 +37,7 @@ class BuilderWrapper:
     def connect_signals(self, handler):
         self.builder.connect_signals(handler)
 
-class PdfShuffler(pdfarranger.PdfArranger):
+class EmbeddedPdfArranger(pdfarranger.PdfArranger):
     def __init__(self):
         super().__init__()
         # Initialize window and UI

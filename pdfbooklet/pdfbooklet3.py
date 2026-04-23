@@ -488,12 +488,18 @@ PageObject.mergePage3 = mergePage3
 # from pdfbooklet import *
 from pdfbooklet.files_chooser import Chooser
 
-import locale       #for multilanguage support
 import gettext
+import locale
 
+try:
+    locale.setlocale(locale.LC_ALL, '')
+except locale.Error:
+    pass
 
-import pdfbooklet.elib_intl3 as elib_intl3
-elib_intl3.install("pdfbooklet", "share/locale")
+locale_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'share', 'locale')
+if not os.path.exists(locale_dir):
+    locale_dir = '/usr/share/locale'
+gettext.install('pdfbooklet', locale_dir)
 
 debug_b = 0
 
@@ -1168,9 +1174,6 @@ class gtkGui(TxtOnly):
         global numfolio, prependPages, appendPages, ref_page, selection, PSSelection
         global numPages, pagesSel, llx_i, lly_i, urx_i, ury_i, mediabox_l
         global ouputFile, optionsDict, selectedIndex_a, selected_page, selected_pages_a, selectedeletedIndex_a, app
-
-        elib_intl3.install("pdfbooklet", "share/locale")
-
         if None != pdfList :
             inputFiles_a = pdfList
             ini.loadPdfFiles()
@@ -1206,7 +1209,7 @@ class gtkGui(TxtOnly):
         self.ar_layout = []
         self.previewPage = 0
         self.clipboard= {}
-        self.shuffler = None
+        self.arranger_view = None
         self.imposition = []
 
         self.initdrag = []
@@ -1418,9 +1421,9 @@ class gtkGui(TxtOnly):
 
     def close_application(self, widget, event=None, mydata=None):
         """Termination"""
-        if self.shuffler != None :
-            self.shuffler.close_application("")
-            self.shuffler = None
+        if self.arranger_view != None :
+            self.arranger_view.close_application("")
+            self.arranger_view = None
 
         if Gtk.main_level():
             self.arw["window1"].destroy()
@@ -1443,14 +1446,14 @@ class gtkGui(TxtOnly):
         self.mru(inputFiles_a, "manager")
         self.chooser.chooser.destroy()
         self.chooser = None
-        if self.shuffler:
-            self.shuffler.model.clear()
-            self.shuffler.pdfqueue = []
-            self.shuffler.nfile = 0
+        if self.arranger_view:
+            self.arranger_view.model.clear()
+            self.arranger_view.pdfqueue = []
+            self.arranger_view.nfile = 0
             for key in inputFiles_a :
-                self.shuffler.add_pdf_pages(inputFiles_a[key])
+                self.arranger_view.add_pdf_pages(inputFiles_a[key])
             # TODO : N'est à faire que si la liste des fichiers a changé
-            self.shuffler.rendering_thread.pdfqueue = self.shuffler.pdfqueue
+            self.arranger_view.rendering_thread.pdfqueue = self.arranger_view.pdfqueue
 
         ini.loadPdfFiles()
         app.selection_s = ""
@@ -1558,16 +1561,16 @@ class gtkGui(TxtOnly):
         self.previewUpdate()
 
 
-        if self.shuffler:
-            self.shuffler.model.clear()
-            self.shuffler.pdfqueue = []
-            self.shuffler.nfile = 0
-            self.shuffler.npage = 0
+        if self.arranger_view:
+            self.arranger_view.model.clear()
+            self.arranger_view.pdfqueue = []
+            self.arranger_view.nfile = 0
+            self.arranger_view.npage = 0
             for key in inputFiles_a :
-                self.shuffler.add_pdf_pages(inputFiles_a[key])
+                self.arranger_view.add_pdf_pages(inputFiles_a[key])
             # TODO : N'est à faire que si la liste des fichiers a changé
-            self.shuffler.rendering_thread.pdfqueue = self.shuffler.pdfqueue
-            #for row in self.shuffler.model:
+            self.arranger_view.rendering_thread.pdfqueue = self.arranger_view.pdfqueue
+            #for row in self.arranger_view.model:
             #        row[6] = False
 
 
@@ -2656,10 +2659,13 @@ class gtkGui(TxtOnly):
                 printExcept()
                 return False
 
+        x = document.get_n_pages()
+        if x == 0:
+            return
+
         page = document.get_page(0)
         self.page = page
 
-        x = document.get_n_pages()
         if x > 1 :
             self.page1 = document.get_page(1)
         else :
@@ -3358,13 +3364,13 @@ class gtkGui(TxtOnly):
             selection2 = TextBuffer.get_text(start_iter, end_iter, False)
             selection2 = selection2.replace("\n",";")
             self.selection_s = selection2
-            if self.shuffler:
-                self.shuffler.model.clear()
-                self.shuffler.pdfqueue = []
-                self.shuffler.nfile = 0
+            if self.arranger_view:
+                self.arranger_view.model.clear()
+                self.arranger_view.pdfqueue = []
+                self.arranger_view.nfile = 0
                 self.loadShuffler()
                 # TODO : N'est à faire que si la liste des fichiers a changé
-                self.shuffler.rendering_thread.pdfqueue = self.shuffler.pdfqueue
+                self.arranger_view.rendering_thread.pdfqueue = self.arranger_view.pdfqueue
         dialog.hide()
         self.previewUpdate()
 
@@ -3614,48 +3620,48 @@ class gtkGui(TxtOnly):
         if len(inputFiles_a) == 0 :
             showwarning(_("No selection"), _("There is no selected file. \nPlease select a file first. "))
             return
-        if self.shuffler == None :
-            self.shuffler = PdfShuffler()
+        if self.arranger_view == None :
+            self.arranger_view = EmbeddedPdfArranger()
             # USE THE ACTIVE WINDOW (Handles Handy replacement)
-            self.shuffler_window = self.shuffler.window 
-            self.shuffler.uiXML.get_object('menubar').hide()
-            self.shuffler.uiXML.get_object('toolbar1').hide()
-            #self.shuffler.uiXML.get_object('menu1_RR').hide()
-            #self.shuffler.uiXML.get_object('menu1_RL').hide()
-            self.shuffler.uiXML.get_object('menu1_crop').hide()
+            self.arranger_view_window = self.arranger_view.window 
+            self.arranger_view.uiXML.get_object('menubar').hide()
+            self.arranger_view.uiXML.get_object('toolbar1').hide()
+            #self.arranger_view.uiXML.get_object('menu1_RR').hide()
+            #self.arranger_view.uiXML.get_object('menu1_RL').hide()
+            self.arranger_view.uiXML.get_object('menu1_crop').hide()
             shufflerBB = self.arw['shufflerbuttonbox']
             shufflerBB.unparent()
-            vbox = self.shuffler.uiXML.get_object('vbox1')
+            vbox = self.arranger_view.uiXML.get_object('vbox1')
             vbox.pack_start(shufflerBB, False, True, 0)
 
             self.loadShuffler()
 
         else :
             self.reloadShuffler()
-            self.shuffler_window.show()
+            self.arranger_view_window.show()
 
 
     def reloadShuffler(self):
         """Reloads the shuffler from the current application state (app.selection_s)."""
-        if hasattr(self.shuffler, 'pool') and self.shuffler.pool:
-            self.shuffler.pool.terminate()
-            self.shuffler.pool.join()
-            self.shuffler.pool = None
-        self.shuffler.model.clear()
-        self.shuffler.pdfqueue = []
-        self.shuffler.nfile = 0
+        if hasattr(self.arranger_view, 'pool') and self.arranger_view.pool:
+            self.arranger_view.pool.terminate()
+            self.arranger_view.pool.join()
+            self.arranger_view.pool = None
+        self.arranger_view.model.clear()
+        self.arranger_view.pdfqueue = []
+        self.arranger_view.nfile = 0
         self.loadShuffler()
 
     def resetShuffler(self, widget=None):
         """Resets the shuffler to the original PDF order (1..N)."""
 
-        if hasattr(self.shuffler, 'pool') and self.shuffler.pool:
-            self.shuffler.pool.terminate()
-            self.shuffler.pool.join()
-            self.shuffler.pool = None
-        self.shuffler.model.clear()
-        self.shuffler.pdfqueue = []
-        self.shuffler.nfile = 0
+        if hasattr(self.arranger_view, 'pool') and self.arranger_view.pool:
+            self.arranger_view.pool.terminate()
+            self.arranger_view.pool.join()
+            self.arranger_view.pool = None
+        self.arranger_view.model.clear()
+        self.arranger_view.pdfqueue = []
+        self.arranger_view.nfile = 0
         # Passing " " (space) forces parsePageSelection to generate the default 1..N selection
         self.loadShuffler(" ")
 
@@ -3664,10 +3670,10 @@ class gtkGui(TxtOnly):
 
             doc_map = {}
             for key in inputFiles_a :
-                pdfdoc = PDF_Doc(inputFiles_a[key], self.shuffler.nfile, self.shuffler.tmp_dir)
+                pdfdoc = PDF_Doc(inputFiles_a[key], self.arranger_view.nfile, self.arranger_view.tmp_dir)
                 if pdfdoc.nfile != 0 and pdfdoc != []:
-                    self.shuffler.nfile = pdfdoc.nfile
-                    self.shuffler.pdfqueue.append(pdfdoc)
+                    self.arranger_view.nfile = pdfdoc.nfile
+                    self.arranger_view.pdfqueue.append(pdfdoc)
                     doc_map[key] = pdfdoc
 
             angle=0
@@ -3692,12 +3698,12 @@ class gtkGui(TxtOnly):
                     descriptor = 'Blank'
                     # width/height are in points (from get_size), create blank pdf matching this
                     # PdfArranger uses points for size
-                    b_doc, b_nfile = self.shuffler.get_blank_pdf(w, h)
+                    b_doc, b_nfile = self.arranger_view.get_blank_pdf(w, h)
                     
                     page_obj = Page(
                         b_nfile, 
                         1, 
-                        self.shuffler.zoom_scale, 
+                        self.arranger_view.zoom_scale, 
                         b_doc.copyname, 
                         0, 
                         1.0, 
@@ -3707,7 +3713,7 @@ class gtkGui(TxtOnly):
                         descriptor, 
                         []
                     )
-                    self.shuffler.model.append([page_obj, descriptor])
+                    self.arranger_view.model.append([page_obj, descriptor])
                 else :
                     Id = str(file1) + ":" + str(npage)
                     angle = 0
@@ -3727,7 +3733,7 @@ class gtkGui(TxtOnly):
                     page_obj = Page(
                         pdfdoc.nfile, 
                         npage, 
-                        self.shuffler.zoom_scale, 
+                        self.arranger_view.zoom_scale, 
                         pdfdoc.filename, 
                         angle, 
                         1.0, 
@@ -3737,12 +3743,12 @@ class gtkGui(TxtOnly):
                         descriptor, 
                         []
                     )
-                    iter = self.shuffler.model.append([page_obj, descriptor])
+                    iter = self.arranger_view.model.append([page_obj, descriptor])
                     res = True
 
-            self.shuffler.reset_iv_width()
+            self.arranger_view.reset_iv_width()
             if res:
-                self.shuffler.render()
+                self.arranger_view.render()
 
     def on_shuffler_delete(self, widget, event):
         """Handle window close request (X button) as Cancel."""
@@ -3750,23 +3756,23 @@ class gtkGui(TxtOnly):
         return True
 
     def closePS(self) :
-        if self.shuffler :
-            self.shuffler.rendering_thread.quit = True
-            # self.shuffler.rendering_thread.quit = True # This was already set? Line 3774
+        if self.arranger_view :
+            self.arranger_view.rendering_thread.quit = True
+            # self.arranger_view.rendering_thread.quit = True # This was already set? Line 3774
             # Gdk.threads_enter() # REMOVED to avoid lock
             # TODO ££
-##            if self.shuffler.rendering_thread.paused == True:
-##                 self.shuffler.rendering_thread.evnt.set()
-##                 self.shuffler.rendering_thread.evnt.clear()
-            self.shuffler_window.destroy()
-            self.shuffler= None
-            self.shuffler
+##            if self.arranger_view.rendering_thread.paused == True:
+##                 self.arranger_view.rendering_thread.evnt.set()
+##                 self.arranger_view.rendering_thread.evnt.clear()
+            self.arranger_view_window.destroy()
+            self.arranger_view= None
+            self.arranger_view
             self.runPS()
 
     def getShufflerSel(self, widget):
 
         selection = []
-        for row in self.shuffler.model:
+        for row in self.arranger_view.model:
             page = row[0]
             # Decoupling Selection ID (1-based for string parsing) from Config ID (0-based for internal use)
             if page.description == 'Blank':
@@ -3827,12 +3833,12 @@ class gtkGui(TxtOnly):
 
 
         self.selection_s = self.compressSelection(selection)
-        self.shuffler_window.hide()
+        self.arranger_view_window.hide()
         self.previewUpdate()
 
 
     def closeShuffler(self, widget) :
-        self.shuffler_window.hide()
+        self.arranger_view_window.hide()
 
 
     def ________________TRANSFORMATIONS() :
@@ -5732,9 +5738,9 @@ def close_applicationx(self, widget, event=None, mydata=None):
 
 def main() :
 
-    global PdfShuffler, PDF_Doc, Page, Sides, Dims
+    global EmbeddedPdfArranger, PDF_Doc, Page, Sides, Dims
 
-    from pdfbooklet.pdfshuffler_g3 import PdfShuffler, PDF_Doc, Page, Sides, Dims
+    from pdfbooklet.pdfarranger_embed import EmbeddedPdfArranger, PDF_Doc, Page, Sides, Dims
 
     global isExcept
     global startup_b
@@ -5778,7 +5784,7 @@ def main() :
 
     errorLog = sys.argv[0] + ".log"
     argv_a = sys.argv
-    sys.argv = [sys.argv[0]]            # remove any parameter because they are not supported by PdfShuffler
+    sys.argv = [sys.argv[0]]            # remove any parameter because they are not supported by EmbeddedPdfArranger
     if os.path.exists(sfp(errorLog)) :
         try :           # Sometimes the file may be locked
             os.remove(sfp(errorLog))
