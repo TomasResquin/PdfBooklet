@@ -1,1 +1,0 @@
-#!/usr/bin/env bash PYTHONPATH=/usr/lib/python3.6/site-packages/ python -c "from pdfbooklet.pdfbooklet3 import main; main()"

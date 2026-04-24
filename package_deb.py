@@ -61,10 +61,15 @@ fi
 
     # Build the package
     print("Building .deb package...")
-    output_deb = f"{package_name}.deb"
-    run_command(f"dpkg-deb --build {pkg_dir} {output_deb}")
+    final_builds_dir = os.path.abspath("builds")
+    if not os.path.exists(final_builds_dir):
+        os.makedirs(final_builds_dir)
+        
+    output_deb_path = os.path.join(final_builds_dir, f"{package_name}.deb")
+    run_command(f"dpkg-deb --build {pkg_dir} {output_deb_path}")
     
-    print(f"Package built successfully: {output_deb}")
+    print(f"Package built successfully: {output_deb_path}")
+    print(f"File generated in: builds/{package_name}.deb")
 
 if __name__ == "__main__":
     main()

@@ -742,29 +742,6 @@ class TxtOnly :
                 return None
         return value
 
-    def readPercentEntry(self, entry, widget_s = "") :
-
-        value = ""
-        if sys.version_info[0] == 2 and isinstance(entry, unicode) :
-                value = entry
-        elif isinstance(entry, str) :
-            value = entry
-        else :
-            value = entry.get_text()
-        value = value.replace(",", ".")
-        if (value == "") :
-            value = 100
-        else :
-            value.replace("%", "")
-            try :
-                value = float(value) / 100
-                if value < 0 :
-                    showwarning(_("Invalid data"), _("Invalid data for %s - must be > 0. Aborting \n") % widget_s)
-                    return None
-            except :
-                showwarning(_("Invalid data"), _("Invalid data for %s - must be numeric. Aborting \n") % widget_s)
-                return None
-        return value
 
     def readIntEntry(self, entry, widget_s = "", type_i = 0, default = 0) :
         # type = 0 : accepts all values >= 0
@@ -806,28 +783,6 @@ class TxtOnly :
             return default
         return value
 
-    def readBoolean(self, entry) :
-
-        value = ""
-
-        if isinstance(entry, str) :
-            if entry.strip().lower() == "true" :
-                value = True
-            elif entry.strip() == "1" :
-                value = True
-            else :
-                value = False
-        elif isinstance(entry, bool) :
-            return entry
-        else :
-            value = entry.get_text()
-        try :
-            if int(value) < 1 :
-                return False
-            else :
-                return True
-        except :
-            return False
 
 
     def parseIniFile(self, inifile = "") :
@@ -1317,17 +1272,8 @@ class gtkGui(TxtOnly):
 
 
     # this small function returns the type of a widget
-    def widget_type(self, widget) :
-        try :
-            z = widget.class_path()
-            z2 = z.split(".")[-1]
-            return z2
-        except:
-            return False
 
 
-    def gtk_delete(self, source=None, event=None):
-        Gtk.main_quit()
 
     def close_application(self, widget, event=None, mydata=None):
         """Termination"""
@@ -1646,55 +1592,6 @@ class gtkGui(TxtOnly):
         self.menuAdd()
 
 
-    def mru_python2(self, filenames_a) :
-
-        mrudir = ""
-        if isinstance(filenames_a, dict) :              # several files selected
-            filenames = join_list(filenames_a, "|")
-            if 1 in filenames_a :                       # At least one file
-                mrudir = os.path.split(filenames_a[1])[0]
-        else :
-            filenames = filenames_a
-            mrudir = os.path.split(filenames_a)[0]
-
-        #filenames = filenames.encode('utf-8')
-
-        configtemp = parser.read(sfp3("pdfbooklet.cfg"))
-
-        if configtemp.has_section("mru") == False :
-            configtemp.add_section("mru")
-        if configtemp.has_section("mru2") == False :
-            configtemp.add_section("mru2")
-
-        # cancel if already present
-        temp_a = []
-        for index in ["mru1", "mru2", "mru3", "mru4"] :
-            if configtemp.has_option("mru",index) :
-                if filenames == configtemp.get("mru",index) :
-                    return
-
-        try :
-            # shift mru
-            if configtemp.has_option("mru","mru3") :
-                configtemp.set("mru","mru4",configtemp.get("mru","mru3"))
-            if configtemp.has_option("mru","mru2") :
-                configtemp.set("mru","mru3",configtemp.get("mru","mru2"))
-            if configtemp.has_option("mru","mru1") :
-                configtemp.set("mru","mru2",configtemp.get("mru","mru1"))
-            # set the new value
-##            filenames_s = filenames.encode("utf-8")
-##            mrudir_s = mrudir.encode("utf-8")
-
-            configtemp.set("mru","mru1",filenames)
-            configtemp.set("mru2","mru2",mrudir)
-            f = open(sfp3("pdfbooklet.cfg"),"w", encoding = "utf8")
-            configtemp.write(f)
-            f.close()
-            configtemp = None
-            self.menuAdd()
-        except :
-            printExcept()
-            alert("problem in mru (line 700)")
 
 
 
@@ -1711,30 +1608,7 @@ class gtkGui(TxtOnly):
             configtemp = None
             return mru_dir
 
-    def read_mru2_python2(self) :
 
-        if os.path.isfile(sfp3("pdfbooklet.cfg")) :
-            configtemp = parser.read(sfp3("pdfbooklet.cfg"))
-
-            try :
-                mru_dir = configtemp.get("mru2","mru2")
-            except :
-                mru_dir = ""
-
-            configtemp = None
-            return mru_dir
-
-    def write_mru2(self, key, filename_u) :
-
-        if os.path.isfile(sfp3("pdfbooklet.cfg")) :
-            configtemp = parser.read(sfp3("pdfbooklet.cfg"))
-
-        if not "mru2" in configtemp :
-            configtemp["mru2"] = OrderedDict()
-
-        (path_u, file_u) = os.path.split(filename_u)
-        configtemp["mru2"][key] = path_u
-        parser.write(configtemp, sfp3("pdfbooklet.cfg"))
 
 
     def menuAdd(self) :
@@ -2362,12 +2236,6 @@ class gtkGui(TxtOnly):
         ini.repeat = 1
         self.arw["entry15"].set_text(step)                   # step
 
-    def presetCopies2(self, r,c,l=1) :
-        self.arw["entry11"].set_value(r)                    # rows
-        self.arw["entry12"].set_value(c)                    # columns
-        ini.booklet = 0                          # checkerboard
-        ini.radioDisp = l                        # lines / columns
-        ini.repeat = 0
 
 
     def presetMerge(self) :                     # One page
@@ -3070,24 +2938,6 @@ class gtkGui(TxtOnly):
 
 
 
-    def createSelection(self) :
-        global inputFiles_a
-        i = 1
-        x = []
-        for f in inputFiles_a :
-            fileName = inputFiles_a[f]
-            numPages = len(inputFile_a[fileName].pages)
-            for z in range(numPages) :
-                pageRef_s = str(i) + ":" + str(z)
-                if pageRef_s + "deleted" in deletedIndex_a :
-                    if deletedIndex_a[pageRef_s + "deleted"] == 1 :
-                        pass
-                    else :
-                        x += [pageRef_s]
-                else :
-                    x += [pageRef_s]
-            i += 1
-        self.selection_s = self.compressSelection(x)
 
     def compressSelection(self, x) :
         if not x:
@@ -3429,10 +3279,6 @@ class gtkGui(TxtOnly):
                 #print (len(self.backup))
                 self.backup_index = len(self.backup)
 
-    def go_back(self, widget) :
-        config = copy.deepcopy(self.backup[self.backup_index - 2])
-        self.setupGui()
-        self.backup_command = False
 
     def _____________________SHUFFLER() :
         pass
@@ -3574,10 +3420,6 @@ class gtkGui(TxtOnly):
             if res:
                 self.arranger_view.render()
 
-    def on_shuffler_delete(self, widget, event):
-        """Handle window close request (X button) as Cancel."""
-        self.closePS()
-        return True
 
     def closePS(self) :
         if self.arranger_view :
@@ -3665,13 +3507,8 @@ class gtkGui(TxtOnly):
         self.arranger_view_window.hide()
 
 
-    def ________________TRANSFORMATIONS() :
-        pass
 
 
-    def ta2(self, widget, event = "") :
-        print("ta2", event)
-        self.transformationsApply("")
 
     def transformationsApply(self, widget, event="", force_update = False) :
         # Reads the values in the gui and updates the config dictionary
@@ -4364,73 +4201,10 @@ class pdfRender():
         if debug_b == 1: logfile_f.close()
         return True
 
-def printTree(curPage,out) :
-
-        #curPage = source.pages[page]
-        keys_a = list(curPage.keys())
-        #temp1 = curPage["/Parent"].get_object()
-        for j in keys_a :
-            #if j in ["/Parent", "/Rotate", "/MediaBox", "/Type", "/Annots", "/Contents"] :
-            if j in ["/Parent"] :
-                continue
-            temp1 = curPage[j].get_object()
-            print("======> page "  + str(page) + "  " + j, file=out)
-            print(temp1, file=out)
-            if isinstance(temp1, dict) :
-                for k in temp1 :
-                    temp2 = temp1[k].get_object()
-                    print(str(k) + " : ", end=' ', file=out)
-                    print(temp2, file=out)
-                    if isinstance(temp2, dict) :
-                        for l in temp2 :
-                            temp3 = temp2[l].get_object()
-                            print(str(l) + " : ", end=' ', file=out)
-                            print(temp3, file=out)
-                            if isinstance(temp3, dict) :
-                                for m in temp3 :
-                                    temp4 = temp3[m].get_object()
-                                    print(str(m) + " : ", end=' ', file=out)
-                                    print(temp4, file=out)
-                                    if isinstance(temp4, dict) :
-                                        for n in temp4 :
-                                            temp5 = temp4[n].get_object()
-                                            print(str(n) + " : ", end=' ', file=out)
-                                            print(temp5, file=out)
 
     #out.close()
 
 
-def parseOptions() :
-    global arg_a
-    parser = OptionParser()
-    parser.add_option("-f", "--file", dest="filename",
-                      help="write report to FILE", metavar="FILE")
-    parser.add_option("-r", "--rows", dest="rows_i",
-                      help="write report to FILE", metavar="FILE")
-    parser.add_option("-c", "--columns", dest="columns_i",
-                      help="write report to FILE", metavar="FILE")
-    parser.add_option("-n", "--numfolio", dest="numfolio",
-                      help="write report to FILE", metavar="FILE")
-    parser.add_option("-b", "--booklet", dest="booklet",
-                      help="write report to FILE", metavar="FILE")
-    parser.add_option("-a", "--appendPages", dest="appendPages",
-                      help="write report to FILE", metavar="FILE")
-    parser.add_option("-p", "--prependPages", dest="prependPages",
-                      help="write report to FILE", metavar="FILE")
-    parser.add_option("-s", "--selection", dest="selection",
-                      help="write report to FILE", metavar="FILE")
-    parser.add_option("-o", "--output", dest="outputFile",
-                      help="write report to FILE", metavar="FILE")
-    parser.add_option("-i", "--iniFile", dest="iniFile",
-                      help="write report to FILE", metavar="FILE")
-    parser.add_option("-e", "--referencePage", dest="referencePage",
-                      help="write report to FILE", metavar="FILE")
-
-    parser.add_option("-q", "--quiet",
-                      action="store_false", dest="verbose", default=True,
-                      help="don't print status messages to stdout")
-
-    (option_v, arg_a) = parser.parse_args()
 
 
 ##    if None != option_v.iniFile :
@@ -4506,15 +4280,6 @@ def sfp3(file1) :
     except :
         time.sleep(1)                 # Sometimes there was a sort of conflict with another thread
 
-def close_applicationx(self, widget, event=None, mydata=None):
-
-    if Gtk.main_level():
-        app.arw["window1"].destroy()
-        Gtk.main_quit()
-    else:
-        sys.exit(0)
-
-    return False
 
 ###########################################################################
 # MAIN ####################################################################
