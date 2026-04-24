@@ -30,3 +30,5 @@
 build_deb/
 *.deb
 PdfBooklet.code-workspace
+dev_scripts/
+builds/

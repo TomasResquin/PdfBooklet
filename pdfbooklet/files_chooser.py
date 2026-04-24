@@ -9,8 +9,7 @@ import os, sys
 
 
 from gi.repository import Gtk, Gio
-from pdfbooklet.pypdf import PdfReader
-
+import pikepdf
 
 def alert(message, type = 0) :
 
@@ -139,8 +138,11 @@ class Chooser:
 
     def loadPdfFile(self,filename) :
 
-        pdfFile = PdfReader(open(filename, "rb"))
-        numpages = len(pdfFile.pages)
+        try:
+            pdfFile = pikepdf.Pdf.open(filename)
+            numpages = len(pdfFile.pages)
+        except pikepdf.PasswordError:
+            numpages = 1
         self.treestore.append([filename, numpages])
 
     # regenerate the array of files (easier to use than the treestore)
