@@ -303,7 +303,9 @@ def calculate_page_transform(page: pikepdf.Page, row, column, ref_width, ref_hei
     v_center_output = (output_height - total_content_height) / 2
     
     # Build the transformation matrix
-    transform = pikepdf.PdfMatrix()
+    # Step -1: Normalize origin. Many PDFs have a CropBox that doesn't start at (0,0).
+    # We must shift the content so that the bottom-left of the visible area is at (0,0).
+    transform = pikepdf.PdfMatrix().translated(-float(rect.llx), -float(rect.lly))
     
     # Step 0: Apply source page rotation
     if source_rotation != 0:
@@ -3226,7 +3228,61 @@ class gtkGui(TxtOnly):
         if self.arw["automaticUpdate"].get_active() == 0 :  # If automatic update is not disabled
             self.preview(self.previewPage)                # update the preview
 
+    def preview_keys(self, widget, event = None) :
+        print ( "==========>>", event)
+
+    def previewNext(self, dummy, event=None) :
+        global selected_page, selectedIndex_a
+        if event.state != Gdk.ModifierType.CONTROL_MASK :
+            selected_page = None
+            selectedIndex_a = {}
+        self.previewPage += 1
+        self.arw["previewEntry"].set_text(str(self.previewPage + 1))
+        if self.arw["automaticUpdate"].get_active() == 0 :  # If automatic update is not disabled
+            self.preview(self.previewPage)                # update the preview
+
+    def previewPrevious(self, dummy, event = None) :
+        global selected_page, selectedIndex_a
+        if event.state != Gdk.ModifierType.CONTROL_MASK :
+            selected_page = None
+            selectedIndex_a = {}
+        self.previewPage -= 1
+        if self.previewPage < 0 :
+            self.previewPage = 0
+        self.arw["previewEntry"].set_text(str(self.previewPage + 1))
+        if self.arw["automaticUpdate"].get_active() == 0 :  # If automatic update is not disabled
+            self.preview(self.previewPage)                # update the preview
+
+    def previewFirst(self, widget) :
+        global selected_page, selectedIndex_a
+        selected_page = None
+        selectedIndex_a = {}
+        self.previewPage = 0
+        self.arw["previewEntry"].set_text(str(self.previewPage + 1))
+        if self.arw["automaticUpdate"].get_active() == 0 :  # If automatic update is not disabled
+            self.preview(self.previewPage)                # update the preview
+
+    def previewLast(self, widget) :
+        global selected_page, selectedIndex_a
+        selected_page = None
+        selectedIndex_a = {}
+        self.previewPage = 1000000    # CreatePageLayout will substitute the right number
+        self.arw["previewEntry"].set_text(str(self.previewPage + 1))
+        if self.arw["automaticUpdate"].get_active() == 0 :  # If automatic update is not disabled
+            self.preview(self.previewPage)                # update the preview
+
+    def preview2(self, widget) :
+        global selected_page
+        selected_page = None
+        previewPage = int(widget.get_text())
+        self.previewPage = previewPage - 1
+        self.arw["previewEntry"].set_text(str(self.previewPage + 1))
+        if self.arw["automaticUpdate"].get_active() == 0 :  # If automatic update is not disabled
+            self.preview(self.previewPage)                # update the preview
+
+
     def previewUpdate(self, Event = None, mydata = None) :
+
         global inputFiles_a
 
         if len(inputFiles_a) == 0 :
