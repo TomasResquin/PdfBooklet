@@ -14,8 +14,13 @@ a = Analysis(
         'gi.repository.Gtk',
         'gi.repository.Gdk',
         'gi.repository.GLib',
+        'gi.repository.GObject',
         'gi.repository.Gio',
         'gi.repository.Pango',
+        'gi.repository.PangoCairo',
+        'gi.repository.cairo',
+        'gi.repository.GdkPixbuf',
+        'gi.repository.Atk',
         'gi.repository.Poppler',
         'pikepdf'
     ],
