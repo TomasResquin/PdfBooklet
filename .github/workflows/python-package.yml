@@ -64,6 +64,7 @@ jobs:
           mingw-w64-x86_64-python-gobject
           mingw-w64-x86_64-qpdf
           mingw-w64-x86_64-gcc
+          mingw-w64-x86_64-python-lxml
           
     - name: Install pip dependencies
       shell: msys2 {0}
