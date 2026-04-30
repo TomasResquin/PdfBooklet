@@ -253,7 +253,8 @@ import pikepdf
 
 def calculate_page_transform(page: pikepdf.Page, row, column, ref_width, ref_height, 
                               output_width, output_height, output_scale, 
-                              columns_i, rows_i, rotate_to_fit=True):
+                              columns_i, rows_i, rotate_to_fit=True,
+                              m_scale=100.0, m_ht=0.0, m_vt=0.0, m_xs=100.0, m_ys=100.0, m_hf=0, m_vf=0):
     """
     Calculate the complete transformation for a page using pikepdf.PdfMatrix.
     """
@@ -325,6 +326,22 @@ def calculate_page_transform(page: pikepdf.Page, row, column, ref_width, ref_hei
     # Step 2: Scale page to fit in reference cell
     transform = transform.scaled(page_scale, page_scale)
     
+    # Step 2.5: Apply manual overrides (scale, flip, translate)
+    abs_scale_x = (m_scale / 100.0) * (m_xs / 100.0)
+    abs_scale_y = (m_scale / 100.0) * (m_ys / 100.0)
+    if m_hf: abs_scale_x = -abs_scale_x
+    if m_vf: abs_scale_y = -abs_scale_y
+    
+    if abs_scale_x != 1.0 or abs_scale_y != 1.0:
+        transform = transform.translated(-scaled_page_width / 2, -scaled_page_height / 2)
+        transform = transform.scaled(abs_scale_x, abs_scale_y)
+        transform = transform.translated(scaled_page_width / 2, scaled_page_height / 2)
+        
+    ht_pts = m_ht / 0.3527
+    vt_pts = m_vt / 0.3527
+    if ht_pts != 0.0 or vt_pts != 0.0:
+        transform = transform.translated(ht_pts, vt_pts)
+
     # Step 3: Center page within reference cell
     transform = transform.translated(h_center_in_cell, v_center_in_cell)
     
@@ -1663,8 +1680,7 @@ class gtkGui(TxtOnly):
             
             if found_path:
                 userGuide_s = found_path
-                
-            subprocess.call(["xdg-open", userGuide_s])
+            subprocess.Popen(["xdg-open", userGuide_s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             os.startfile(sfp(userGuide_s))
 
@@ -1680,7 +1696,7 @@ class gtkGui(TxtOnly):
 
         # We get the value from the widget name (the 3 menu options use the same function)
         wname = widget.get_name()
-        match = re.match("rotate(\d*)", wname)
+        match = re.match(r"rotate(\d*)", wname)
         value = match.group(1)
 
         # Code below is just an adaptation of function "transormationsApply"
@@ -2272,11 +2288,7 @@ class gtkGui(TxtOnly):
         # If nothing has not yet been loaded, show nofile.pdf
         try :
             data1 = outputStream.getvalue()
-            with open("/tmp/pdfbooklet.log", "a") as _lf:
-                _lf.write(f"OnDraw: outputStream.getvalue() returned {len(data1)} bytes\n")
         except Exception as _e:
-            with open("/tmp/pdfbooklet.log", "a") as _lf:
-                _lf.write(f"OnDraw: outputStream.getvalue() FAILED: {_e}, loading nofile.pdf\n")
             f1 = open(sfp2("data/nofile.pdf"),"rb")
             data1 = f1.read()
             f1.close()
@@ -2285,8 +2297,6 @@ class gtkGui(TxtOnly):
         # TODO : When two calls are too close, it may create a strange stack resulting in an empty OutputStream
         #        This has to be redesigned.
         if len(data1) == 0 :
-            with open("/tmp/pdfbooklet.log", "a") as _lf:
-                _lf.write("OnDraw: data1 is EMPTY, returning\n")
             return
 
         # If the preview has not changed, don't render
@@ -2302,12 +2312,8 @@ class gtkGui(TxtOnly):
             # Take care that you need to call .close() on the Gio.MemoryInputStream once you're done with your pdf document.
             document = Poppler.Document.new_from_stream(input_stream, -1, None, None)
             self.document= document
-            with open("/tmp/pdfbooklet.log", "a") as _lf:
-                _lf.write(f"OnDraw: Poppler loaded from stream OK, pages: {document.get_n_pages()}\n")
 
         except Exception as _e1:
-            with open("/tmp/pdfbooklet.log", "a") as _lf:
-                _lf.write(f"OnDraw: Poppler stream FAILED: {_e1}, trying file fallback\n")
             # bug workaround
             try:
                 filepath = os.path.join(tempfile.gettempdir(), "preview.pdf")
@@ -2315,19 +2321,13 @@ class gtkGui(TxtOnly):
                     f1.write(data1)
                 document = Poppler.Document.new_from_file("file:///" + filepath, None)
                 self.document= document
-                with open("/tmp/pdfbooklet.log", "a") as _lf:
-                    _lf.write(f"OnDraw: Poppler loaded from FILE OK, pages: {document.get_n_pages()}\n")
             except Exception as _e2:
-                with open("/tmp/pdfbooklet.log", "a") as _lf:
-                    _lf.write(f"OnDraw: Poppler file ALSO FAILED: {_e2}\n")
                 print("Error rendering document in poppler")
                 printExcept()
                 return False
 
         x = document.get_n_pages()
         if x == 0:
-            with open("/tmp/pdfbooklet.log", "a") as _lf:
-                _lf.write("OnDraw: Poppler document has 0 pages, returning\n")
             return
 
         page = document.get_page(0)
@@ -2662,7 +2662,7 @@ class gtkGui(TxtOnly):
 
         elif event.type == Gdk.EventType.BUTTON_PRESS:
             if event.button == 3 :            # right click, runs the context menu
-                self.arw["contextmenu1"].popup(None, None, None, None, event.button, event.time)
+                self.arw["contextmenu1"].popup_at_pointer(event)
                 return
 
             else :
@@ -3742,7 +3742,7 @@ class gtkGui(TxtOnly):
                             if self.arw["show"].get_active() == 1 :
 
                                 if 'linux' in sys.platform :
-                                    subprocess.call(["xdg-open", outputFile])
+                                    subprocess.Popen(["xdg-open", outputFile], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                 else:
                                     os.startfile(outputFile)
 
@@ -3806,7 +3806,7 @@ class pdfRender():
             return False
 
         selection = re.sub("[;,]{2,}", ";", selection)          # we replace successive ; or , by a single ;
-        syntax_s = re.sub("[0-9,;:b\-\s]*", "", selection)      # To verify all characters are valid, we remove all them and there should remain nothing
+        syntax_s = re.sub(r"[0-9,;:b\-\s]*", "", selection)      # To verify all characters are valid, we remove all them and there should remain nothing
         syntax_s = syntax_s.strip()
         if syntax_s != "" :                                     # If something remains, it is not valid
             showwarning(_("Invalid data"), _("Invalid data for Selection : %s. Aborting \n") % syntax_s)
@@ -4075,11 +4075,9 @@ class pdfRender():
 
 
     def createNewPdf(self, ar_pages, ar_layout, ar_cahiers, outputFile, preview = -1) :
-        with open("/tmp/pdfbooklet.log", "a") as f:
-            f.write(f"createNewPdf called with preview={preview}, len(ar_pages)={len(ar_pages)}\n")
 
         global debug_b, inputFile_a, inputFiles_a
-        global mediabox_l
+        global mediabox_l, config, ini, app
         global outputStream
         import io
         import os
@@ -4112,24 +4110,40 @@ class pdfRender():
                 return
 
         # Prepare Creep
-        creep_val = 0
-        creep_factor = 0
+        creep_mm = 0.0
+        creep_factor_mm = 0.0
         start_pages = [0]
         
         try:
+            # Use config as primary source of truth, fallback to ini/app for live GUI state
+            is_booklet = False
             if hasattr(ini, 'booklet') and ini.booklet > 0:
-                 if hasattr(app, "readmmEntry") and "creep" in app.arw and app.arw["creep"].get_text():
-                     creep_val_raw = app.readmmEntry(app.arw["creep"])
-                     if creep_val_raw > 0:
-                         creep_val = creep_val_raw
-                         mem = 0
-                         sorted_keys = sorted(ar_cahiers.keys())
-                         for k in sorted_keys:
-                             val = ar_cahiers[k]
-                             if val > 0: creep_factor = creep_val / val
-                             page_val = val * 2
-                             start_pages.append(page_val + mem)
-                             mem += page_val
+                is_booklet = True
+            elif "options" in config and "booklet" in config["options"]:
+                try: is_booklet = int(config["options"]["booklet"]) > 0
+                except: pass
+            
+            if is_booklet:
+                creep_str = ""
+                if "options" in config and "creep" in config.get("options", {}) and config["options"]["creep"]:
+                    creep_str = str(config["options"]["creep"])
+                elif hasattr(app, "arw") and "creep" in app.arw:
+                    creep_str = app.arw["creep"].get_text()
+                
+                if creep_str:
+                    creep_str = creep_str.replace(",", ".")
+                    try:
+                        creep_mm = float(creep_str)
+                        if creep_mm != 0:
+                            mem = 0
+                            sorted_keys = sorted(ar_cahiers.keys())
+                            for k in sorted_keys:
+                                val = ar_cahiers[k]
+                                if val > 0: creep_factor_mm = creep_mm / val
+                                page_val = val * 2
+                                start_pages.append(page_val + mem)
+                                mem += page_val
+                    except: pass
         except: pass
 
         # Prepare data for workers
@@ -4144,14 +4158,14 @@ class pdfRender():
              specs = ar_pages[a]
              enriched_specs = []
              
-             Htrans_base = 0
-             if creep_val > 0:
+             Htrans_base_mm = 0
+             if creep_mm != 0:
                  s_p = 0
                  for x in start_pages:
                      if i >= x: s_p = x
                  
                  page_in_bk = i - s_p
-                 Htrans_base = creep_factor * (int(page_in_bk/2) - (page_in_bk % 2))
+                 Htrans_base_mm = creep_factor_mm * (int(page_in_bk/2) - (page_in_bk % 2))
              
              for idx_spec, spec in enumerate(specs):
                  if spec:
@@ -4174,14 +4188,58 @@ class pdfRender():
                                       val = pg.get("shuffler_rotate")
                                       if val: rot = int(val)
                              
-                             creep_x = 0
-                             if Htrans_base != 0 and idx_spec < len(ar_layout):
-                                 col = ar_layout[idx_spec][1]
-                                 if col == 0: creep_x = Htrans_base
-                                 else: creep_x = -Htrans_base
+                             manual_scale = 100.0
+                             manual_xs = 100.0
+                             manual_ys = 100.0
+                             manual_ht = 0.0
+                             manual_vt = 0.0
+                             manual_hf = 0
+                             manual_vf = 0
                              
-                             if rot != 0 or creep_x != 0:
-                                  spec = f"{f_n_str}:{p_n_str}:{rot}:{creep_x}"
+                             def get_conf_val(key, default, cast_fn):
+                                 val = default
+                                 if idx_spec < len(ar_layout):
+                                     pos_id = f"{rows_i - ar_layout[idx_spec][0]},{ar_layout[idx_spec][1] + 1}"
+                                     if pos_id in config and key in config[pos_id]:
+                                         try: val = cast_fn(config[pos_id][key])
+                                         except: pass
+                                 if conf_key in config and key in config[conf_key]:
+                                     try: val = cast_fn(config[conf_key][key])
+                                     except: pass
+                                 eo_id = "even" if ((i+1) % 2 == 0) else "odd"
+                                 if eo_id in config and key in config[eo_id]:
+                                     try: val = cast_fn(config[eo_id][key])
+                                     except: pass
+                                 return val
+                                 
+                             manual_rot = get_conf_val("rotate", 0, int)
+                             manual_scale = get_conf_val("scale", 100.0, float)
+                             manual_xs = get_conf_val("xscale", 100.0, float)
+                             manual_ys = get_conf_val("yscale", 100.0, float)
+                             manual_ht = get_conf_val("htranslate", 0.0, float)
+                             manual_vt = get_conf_val("vtranslate", 0.0, float)
+                             
+                             def my_bool(v):
+                                 if str(v).lower() in ('true', '1', 't', 'y', 'yes'): return 1
+                                 return 0
+                                 
+                             manual_hf = get_conf_val("hflip", 0, my_bool)
+                             manual_vf = get_conf_val("vflip", 0, my_bool)
+                             
+                             rot += manual_rot
+                             
+                             if Htrans_base_mm != 0 and idx_spec < len(ar_layout):
+                                 col = ar_layout[idx_spec][1]
+                                 if col == 0: manual_ht += Htrans_base_mm
+                                 else: manual_ht -= Htrans_base_mm
+                             
+                             import json
+                             spec_json = {
+                                 "f": f_n_str, "p": p_n_str, "rot": rot,
+                                 "sc": manual_scale, "ht": manual_ht, "vt": manual_vt,
+                                 "xs": manual_xs, "ys": manual_ys, "hf": manual_hf, "vf": manual_vf
+                             }
+                             spec = json.dumps(spec_json)
                      except: pass
                  enriched_specs.append(spec)
              page_tasks.append((i, enriched_specs)) 
@@ -4198,9 +4256,22 @@ class pdfRender():
         chunks = [page_tasks[j:j + chunk_size] for j in range(0, len(page_tasks), chunk_size)]
         
         # Prepare params
-        output_params = (mediabox_l, outputScale, columns_i, rows_i)
+        g_scale = float(config.get("output", {}).get("scale", 100.0)) if "output" in config else 100.0
+        g_xs = float(config.get("output", {}).get("xscale", 100.0)) if "output" in config else 100.0
+        g_ys = float(config.get("output", {}).get("yscale", 100.0)) if "output" in config else 100.0
+        g_ht = float(config.get("output", {}).get("htranslate", 0.0)) if "output" in config else 0.0
+        g_vt = float(config.get("output", {}).get("vtranslate", 0.0)) if "output" in config else 0.0
+        g_rot = int(config.get("output", {}).get("rotate", 0)) if "output" in config else 0
+        def my_bool(v):
+            if str(v).lower() in ('true', '1', 't', 'y', 'yes'): return 1
+            return 0
+        g_hf = my_bool(config.get("output", {}).get("hflip", 0)) if "output" in config else 0
+        g_vf = my_bool(config.get("output", {}).get("vflip", 0)) if "output" in config else 0
+        
+        global_transforms = (g_scale, g_xs, g_ys, g_ht, g_vt, g_rot, g_hf, g_vf)
+        output_params = (mediabox_l, outputScale, columns_i, rows_i, global_transforms)
         config_params = (urx_i, ury_i)
-        file_paths = inputFiles_a 
+        file_paths = inputFiles_a
         
         results = []
         # Sequential processing (pikepdf is very fast, multiprocessing is unnecessary and causes GTK spawn bugs)
@@ -4243,12 +4314,6 @@ class pdfRender():
         # Finish
         output.save(outputStream)
         output.close()
-        
-        with open("/tmp/pdfbooklet.log", "a") as f:
-            if preview != -1:
-                f.write(f"Preview saved to outputStream, size: {len(outputStream.getvalue())}\n")
-            else:
-                f.write(f"Export saved successfully\n")
 
         
         if preview == -1:
@@ -4546,7 +4611,15 @@ def batch_render_worker(chunk_data, ar_layout, file_paths, output_params, config
         import pikepdf
         
         # Unpack parameters
-        mediabox_l, outputScale, columns_i, rows_i = output_params
+        if len(output_params) == 5:
+            mediabox_l, outputScale, columns_i, rows_i, global_transforms = output_params
+            g_scale, g_xs, g_ys, g_ht, g_vt, g_rot, g_hf, g_vf = global_transforms
+        else:
+            mediabox_l, outputScale, columns_i, rows_i = output_params
+            g_scale = g_xs = g_ys = 100.0
+            g_ht = g_vt = 0.0
+            g_rot = g_hf = g_vf = 0
+            
         urx_i, ury_i = config_params
         
         # Open readers
@@ -4589,18 +4662,32 @@ def batch_render_worker(chunk_data, ar_layout, file_paths, output_params, config
                 spec = page_specs[layout_idx]
                 if spec: 
                     try:
-                        parts = spec.split(":")
-                        file_n_str = parts[0]
-                        page_n_str = parts[1]
-                        rotation = 0
-                        creep_x = 0
-                        if len(parts) > 2:
-                            rotation = int(parts[2])
-                        if len(parts) > 3:
-                            creep_x = float(parts[3])
-                            
-                        file_n = int(file_n_str)
-                        page_n = int(page_n_str)
+                        import json
+                        try:
+                            parts = json.loads(spec)
+                            file_n = int(parts.get("f", -1))
+                            page_n = int(parts.get("p", -1))
+                            rotation = int(parts.get("rot", 0))
+                            m_scale = float(parts.get("sc", 100.0))
+                            m_ht = float(parts.get("ht", 0.0))
+                            m_vt = float(parts.get("vt", 0.0))
+                            m_xs = float(parts.get("xs", 100.0))
+                            m_ys = float(parts.get("ys", 100.0))
+                            m_hf = int(parts.get("hf", 0))
+                            m_vf = int(parts.get("vf", 0))
+                        except Exception:
+                            parts = spec.split(":")
+                            file_n_str = parts[0]
+                            page_n_str = parts[1]
+                            rotation = 0
+                            if len(parts) > 2:
+                                rotation = int(parts[2])
+                                
+                            file_n = int(file_n_str)
+                            page_n = int(page_n_str)
+                            m_scale = m_xs = m_ys = 100.0
+                            m_ht = m_vt = 0.0
+                            m_hf = m_vf = 0
                         
                         if page_n >= 0 and file_n in readers:
                             reader = readers[file_n]
@@ -4630,8 +4717,31 @@ def batch_render_worker(chunk_data, ar_layout, file_paths, output_params, config
                                     output_scale=output_params[1],
                                     columns_i=output_params[2],
                                     rows_i=output_params[3],
-                                    rotate_to_fit=False # Rotation handled above
+                                    rotate_to_fit=False, # Rotation handled above
+                                    m_scale=m_scale, m_ht=m_ht, m_vt=m_vt,
+                                    m_xs=m_xs, m_ys=m_ys, m_hf=m_hf, m_vf=m_vf
                                 )
+                                
+                                # Apply Global Transformations
+                                out_w = output_params[0][0]
+                                out_h = output_params[0][1]
+                                g_ht_pts = g_ht / 0.3527
+                                g_vt_pts = g_vt / 0.3527
+                                g_abs_sx = (g_scale / 100.0) * (g_xs / 100.0)
+                                g_abs_sy = (g_scale / 100.0) * (g_ys / 100.0)
+                                if g_hf: g_abs_sx = -g_abs_sx
+                                if g_vf: g_abs_sy = -g_abs_sy
+                                
+                                if g_abs_sx != 1.0 or g_abs_sy != 1.0 or g_rot != 0:
+                                    transform = transform.translated(-out_w / 2, -out_h / 2)
+                                    if g_rot != 0:
+                                        transform = transform.rotated(g_rot)
+                                    if g_abs_sx != 1.0 or g_abs_sy != 1.0:
+                                        transform = transform.scaled(g_abs_sx, g_abs_sy)
+                                    transform = transform.translated(out_w / 2, out_h / 2)
+                                    
+                                if g_ht_pts != 0.0 or g_vt_pts != 0.0:
+                                    transform = transform.translated(g_ht_pts, g_vt_pts)
                                 
                                 # Restore original rotation so we don't mess up future uses
                                 if rotation != 0:
@@ -4640,18 +4750,10 @@ def batch_render_worker(chunk_data, ar_layout, file_paths, output_params, config
                                     else:
                                         source_page.Rotate = original_rotation
                                 
-                                # Apply Creep Offset
-                                if creep_x != 0:
-                                    transform = transform.translated(creep_x, 0)
-                                
                                 # Merge transformed page
                                 draw_overlay_with_transform(writer, page, source_page, transform)
 
                     except Exception as e:
-                        import traceback
-                        with open("/tmp/pdfbooklet.log", "a") as f:
-                            f.write(f"Error processing spec {spec}: {e}\n")
-                            f.write(traceback.format_exc() + "\n")
                         pass
 
                         
