@@ -2448,7 +2448,8 @@ class gtkGui(TxtOnly):
         for a in self.rotate_layout() :     # returns the layout, rotated if necessary
 
             # human readable page number
-            pageRef_s = self.ar_pages[0][i]
+            current_pages = list(self.ar_pages.values())[0]
+            pageRef_s = current_pages[i]
             file_number, page_number = pageRef_s.split(":")
             page_number = int(page_number) + 1
             if file_number == "1" :
@@ -3105,11 +3106,11 @@ class gtkGui(TxtOnly):
                     except :                # If we are arrived at the last page
                         pass
                     ar_pages = {}
-                    ar_pages[0] = mem
+                    ar_pages[previewPage] = mem
 
                     # If previewing of two pages one over the other is requested
                     if 1 == 2 :
-                        ar_pages[1] = mem1
+                        ar_pages[previewPage + 1] = mem1
 
                     self.ar_pages = ar_pages
                     self.ar_layout = ar_layout
@@ -4149,9 +4150,10 @@ class pdfRender():
         # Prepare data for workers
         page_tasks = []
         for i, a in enumerate(ar_pages):
+             current_idx = a if isinstance(ar_pages, dict) else i
+             
              # For preview, only process the requested page
              if preview != -1 and len(ar_pages) > 1:
-                 current_idx = a if isinstance(ar_pages, dict) else i
                  if current_idx != preview:
                      continue
                  
@@ -4162,9 +4164,9 @@ class pdfRender():
              if creep_mm != 0:
                  s_p = 0
                  for x in start_pages:
-                     if i >= x: s_p = x
+                     if current_idx >= x: s_p = x
                  
-                 page_in_bk = i - s_p
+                 page_in_bk = current_idx - s_p
                  Htrans_base_mm = creep_factor_mm * (int(page_in_bk/2) - (page_in_bk % 2))
              
              for idx_spec, spec in enumerate(specs):
