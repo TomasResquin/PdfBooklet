@@ -65,6 +65,7 @@ jobs:
           mingw-w64-x86_64-qpdf
           mingw-w64-x86_64-gcc
           mingw-w64-x86_64-python-lxml
+          mingw-w64-x86_64-poppler
           
     - name: Install pip dependencies
       shell: msys2 {0}
