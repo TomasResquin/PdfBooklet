@@ -36,7 +36,7 @@ jobs:
     - name: Lint with flake8
       run: |
         # Basic linting to catch critical errors, ignoring the bundled pdfarranger
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=pdfbooklet/pdfarranger
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=pdfbooklet/pdfarranger --builtins=_ --ignore=F824
     - name: Create package
       run: |
         python3 package_deb.py
@@ -76,7 +76,7 @@ jobs:
       shell: msys2 {0}
       run: |
         python -m py_compile pdfbooklet/pdfbooklet3.py pdfbooklet/files_chooser.py pdfbooklet/pdfarranger_embed.py
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=pdfbooklet/pdfarranger
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=pdfbooklet/pdfarranger --builtins=_ --ignore=F824
         
     - name: Build Windows Executable with PyInstaller
       shell: msys2 {0}
