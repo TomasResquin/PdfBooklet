@@ -1,13 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 
 block_cipher = None
+
+msys2_root = 'C:/msys64/mingw64'
 
 a = Analysis(
     ['pdfbooklet/pdfbooklet3.py'],
     pathex=[],
-    binaries=[],
+    binaries=[
+        (os.path.join(msys2_root, 'bin', 'libpoppler-glib-8.dll'), '.'),
+        (os.path.join(msys2_root, 'bin', 'libpoppler-*.dll'), '.'),
+    ],
     datas=[
-        ('pdfbooklet/data/*', 'pdfbooklet/data/')
+        ('pdfbooklet/data/*', 'pdfbooklet/data/'),
+        (os.path.join(msys2_root, 'lib', 'girepository-1.0', 'Poppler-0.18.typelib'), 'lib/girepository-1.0'),
     ],
     hiddenimports=[
         'gi',
