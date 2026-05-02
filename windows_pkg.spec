@@ -1,9 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import sys
 
 block_cipher = None
 
-msys2_root = 'C:/msys64/mingw64'
+msys2_root = sys.prefix
 
 a = Analysis(
     ['pdfbooklet/pdfbooklet3.py'],
