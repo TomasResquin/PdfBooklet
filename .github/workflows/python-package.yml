@@ -77,8 +77,8 @@ jobs:
     - name: Install pip-only dependencies
       shell: msys2 {0}
       run: |
-        # 'keyboard' not in MSYS2 repos — install via pip
-        /mingw64/bin/python3 -m pip install --user keyboard
+        # These packages are not in MSYS2 repos — install via pip
+        /mingw64/bin/python3 -m pip install --user keyboard flake8
 
     - name: Syntax check
       shell: msys2 {0}
