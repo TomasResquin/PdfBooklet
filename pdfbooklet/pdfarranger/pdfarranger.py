@@ -48,7 +48,7 @@ sharedir = os.path.join(sys.prefix, 'share')
 basedir = '.'
 if getattr(sys, 'frozen', False):
     multiprocessing.freeze_support()
-    basedir = os.path.dirname(sys.executable)
+    basedir = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
     sharedir = os.path.join(basedir, 'share')
 elif sys.argv[0]:
     execdir = os.path.dirname(os.path.realpath(sys.argv[0]))
@@ -63,6 +63,7 @@ if not os.path.exists(localedir):
 
 try:
     locale.setlocale(locale.LC_ALL, '')
+    locale.setlocale(locale.LC_NUMERIC, 'C')
 except locale.Error:
     pass  # Gtk already prints a warning
 

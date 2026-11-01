@@ -1,4 +1,3 @@
-
 import os
 import shutil
 import subprocess
@@ -10,7 +9,7 @@ def run_command(command):
 
 def main():
     app_name = "pdfbooklet"
-    version = "3.1.6"
+    version = "3.1.7"
     arch = "all"
     package_name = f"{app_name}_{version}_{arch}"
     build_dir = os.path.abspath("build_deb")
@@ -37,7 +36,8 @@ Version: {version}
 Section: utils
 Priority: optional
 Architecture: {arch}
-Depends: python3, python3-gi, python3-gi-cairo, python3-cairo, gir1.2-gtk-3.0, gir1.2-poppler-0.18
+Depends: python3, python3-gi, python3-gi-cairo, python3-cairo, python3-pikepdf, python3-dateutil, python3-packaging, gir1.2-gtk-3.0, gir1.2-poppler-0.18
+Recommends: gir1.2-handy-1
 Maintainer: Tomas Julian Resquin <tomasjulianresquin@proton.me>
 Description: A simple application for creating booklets and other layouts from PDF files
  PdfBooklet is a GTK+ based utility to create booklets and other layouts 
@@ -66,7 +66,19 @@ fi
         os.makedirs(final_builds_dir)
         
     output_deb_path = os.path.join(final_builds_dir, f"{package_name}.deb")
-    run_command(f"dpkg-deb --build {pkg_dir} {output_deb_path}")
+    
+    # If building on a mounted NTFS filesystem (like WSL /mnt/c), permissions are often 777,
+    # which causes dpkg-deb to reject the control directory. We copy to /tmp to build safely.
+    if "/mnt/" in pkg_dir:
+        tmp_build = f"/tmp/{package_name}_deb"
+        if os.path.exists(tmp_build):
+            shutil.rmtree(tmp_build)
+        shutil.copytree(pkg_dir, tmp_build)
+        run_command(f"chmod -R 0755 {tmp_build}")
+        run_command(f"dpkg-deb --root-owner-group --build {tmp_build} {output_deb_path}")
+        shutil.rmtree(tmp_build)
+    else:
+        run_command(f"dpkg-deb --root-owner-group --build {pkg_dir} {output_deb_path}")
     
     print(f"Package built successfully: {output_deb_path}")
     print(f"File generated in: builds/{package_name}.deb")

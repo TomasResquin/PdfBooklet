@@ -6,6 +6,7 @@ from __future__ import unicode_literals
 
 # 3.1.5f : fixed incorrect crop when changing output size (set cropbox=mediabox before merge)
 # 3.1.4e : small bugfix
+# version 3.1.7 : engine stabilization, inherited /Rotate & /CropBox resolution, outward creep adjustment, layout & selection bug fixes, encrypted PDF batch rendering, bundle pruning
 # version 3.1.6 : migration to pikepdf, integration of PdfArranger, rendering matrix fixes for rotation and scaling, Windows build support via cx_Freeze, GUI fixes
 
 # version 3.1.4c : fixed horizontal scrollbar, optimized zoom, fixed multiprocessing pool error, implemented thumbnail caching
@@ -35,7 +36,7 @@ from __future__ import unicode_literals
 # https://stackoverflow.com/questions/45838863/gio-memoryinputstream-does-not-free-memory-when-closed
 # Fix bug for display of red rectangles when the output page is rotated 90° or 270°
 
-PB_version = "3.1.6"
+PB_version = "3.1.7"
 # it integrates the changes of the file which have 3.1.5 as reference. 
 # Next version should be 3.2.0
 
@@ -251,51 +252,75 @@ import re
 
 import pikepdf
 
+def get_page_rotate(page: pikepdf.Page) -> int:
+    """Resolve /Rotate from the page or its ancestor /Pages nodes (ISO 32000 inheritable attribute)."""
+    obj = page.obj if hasattr(page, "obj") else page
+    visited = set()
+    while isinstance(obj, pikepdf.Dictionary):
+        if "/Rotate" in obj:
+            try:
+                return int(obj["/Rotate"]) % 360
+            except Exception:
+                return 0
+        if "/Parent" not in obj:
+            break
+        parent = obj["/Parent"]
+        obj_id = getattr(parent, "objgen", id(parent))
+        if obj_id in visited:
+            break
+        visited.add(obj_id)
+        obj = parent
+    return 0
+
 def calculate_page_transform(page: pikepdf.Page, row, column, ref_width, ref_height, 
                               output_width, output_height, output_scale, 
                               columns_i, rows_i, rotate_to_fit=True,
-                              m_scale=100.0, m_ht=0.0, m_vt=0.0, m_xs=100.0, m_ys=100.0, m_hf=0, m_vf=0):
+                              m_scale=100.0, m_ht=0.0, m_vt=0.0, m_xs=100.0, m_ys=100.0, m_hf=0, m_vf=0,
+                              autoscale=True, shuffler_rot=0, m_rot=0.0):
     """
     Calculate the complete transformation matrix for placing a page on the output sheet.
     """
     import math
     
-    # Get page dimensions
-    source_rotation = int(page.get("/Rotate", 0))
-    rect = pikepdf.Rectangle(page.get("/CropBox", page.mediabox))
+    # Get page dimensions and intrinsic PDF rotation (including inherited /Rotate from /Pages)
+    # Note: PDF /Rotate is clockwise, while PdfBooklet matrices rotate counter-clockwise
+    raw_pdf_rotation = get_page_rotate(page)
+    pdf_ccw_rotation = (360 - raw_pdf_rotation) % 360
+    intrinsic_rotation = (pdf_ccw_rotation + int(shuffler_rot)) % 360
+
+    rect = pikepdf.Rectangle(page.cropbox)
     
     orig_width = float(rect.width)
     orig_height = float(rect.height)
     
-    # Adjust dimensions based on rotation
-    if source_rotation in [90, -270, 270, -90]:
+    # Adjust dimensions based on intrinsic rotation (PDF /Rotate + PdfArranger rotation)
+    if intrinsic_rotation in [90, 270]:
         page_width, page_height = orig_height, orig_width
     else:
         page_width, page_height = orig_width, orig_height
     
-    # Determine orientations
+    # Determine orientations for rotate-to-fit (only when autoscale is enabled and pages are non-square)
     ref_landscape = ref_width > ref_height
     page_landscape = page_width > page_height
     
     rotation = 0
-    if rotate_to_fit and ref_landscape != page_landscape:
-        rotation = 270  # Rotate 270 degrees
+    if autoscale and rotate_to_fit and (ref_width != ref_height) and (page_width != page_height) and (ref_landscape != page_landscape):
+        rotation = 270  # Rotate 270 degrees CCW (90 degrees CW) to match reference orientation
         page_width, page_height = page_height, page_width
     
-    # Calculate scale to fit page in reference cell
-    scale_w = ref_width / page_width
-    scale_h = ref_height / page_height
-    page_scale = min(scale_w, scale_h)
+    # Calculate scale to fit page in reference cell (only when autoscale is enabled)
+    if autoscale:
+        scale_w = ref_width / page_width
+        scale_h = ref_height / page_height
+        page_scale = min(scale_w, scale_h)
+        eff_output_scale = output_scale
+    else:
+        page_scale = 1.0
+        eff_output_scale = 1.0
     
-    # Calculate centering within the reference cell
+    # Calculate dimensions within the reference cell
     scaled_page_width = page_width * page_scale
     scaled_page_height = page_height * page_scale
-    h_center_in_cell = (ref_width - scaled_page_width) / 2
-    v_center_in_cell = (ref_height - scaled_page_height) / 2
-    
-    # Cell position in reference coordinates
-    cell_x = column * ref_width
-    cell_y = row * ref_height
     
     def mult(A, B):
         return pikepdf.Matrix(
@@ -318,53 +343,59 @@ def calculate_page_transform(page: pikepdf.Page, row, column, ref_width, ref_hei
     # Normalize origin to (0,0)
     transform = mult(transform, translate(-float(rect.llx), -float(rect.lly)))
     
-    # Apply source page rotation
-    if source_rotation != 0:
-        transform = mult(transform, rotate(source_rotation))
-        if source_rotation == 90 or source_rotation == -270:
+    # Apply intrinsic page rotation (PDF /Rotate + PdfArranger rotation)
+    if intrinsic_rotation != 0:
+        transform = mult(transform, rotate(intrinsic_rotation))
+        if intrinsic_rotation == 90:
             transform = mult(transform, translate(orig_height, 0))
-        elif source_rotation == 180 or source_rotation == -180:
+        elif intrinsic_rotation == 180:
             transform = mult(transform, translate(orig_width, orig_height))
-        elif source_rotation == 270 or source_rotation == -90:
+        elif intrinsic_rotation == 270:
             transform = mult(transform, translate(0, orig_width))
             
     # Logical rotation (rotate-to-fit)
+    # Note: page_width and page_height were already swapped above when rotation in (90, 270),
+    # so page_height is the pre-rotation width and page_width is the pre-rotation height.
     if rotation != 0:
         transform = mult(transform, rotate(rotation))
-        if rotation == 90 or rotation == -270:
-            transform = mult(transform, translate(page_height, 0))
-        elif rotation == 180 or rotation == -180:
+        if rotation == 90:
+            transform = mult(transform, translate(page_width, 0))
+        elif rotation == 180:
             transform = mult(transform, translate(page_width, page_height))
-        elif rotation == 270 or rotation == -90:
-            transform = mult(transform, translate(0, page_width))
+        elif rotation == 270:
+            transform = mult(transform, translate(0, page_height))
     
     # Scale page to fit in reference cell
-    transform = mult(transform, scale(page_scale, page_scale))
+    if page_scale != 1.0:
+        transform = mult(transform, scale(page_scale, page_scale))
     
-    # Apply manual overrides (scale, flip)
+    # Apply manual overrides (centered rotation, scale, flip) around the scaled page center
     abs_scale_x = (m_scale / 100.0) * (m_xs / 100.0)
     abs_scale_y = (m_scale / 100.0) * (m_ys / 100.0)
     if m_hf: abs_scale_x = -abs_scale_x
     if m_vf: abs_scale_y = -abs_scale_y
     
-    if abs_scale_x != 1.0 or abs_scale_y != 1.0:
+    if abs_scale_x != 1.0 or abs_scale_y != 1.0 or m_rot != 0:
         transform = mult(transform, translate(-scaled_page_width / 2, -scaled_page_height / 2))
-        transform = mult(transform, scale(abs_scale_x, abs_scale_y))
+        if m_rot != 0:
+            transform = mult(transform, rotate(float(m_rot)))
+        if abs_scale_x != 1.0 or abs_scale_y != 1.0:
+            transform = mult(transform, scale(abs_scale_x, abs_scale_y))
         transform = mult(transform, translate(scaled_page_width / 2, scaled_page_height / 2))
         
-    ht_pts = m_ht / 0.3527
-    vt_pts = m_vt / 0.3527
+    ht_pts = m_ht * 72.0 / 25.4
+    vt_pts = m_vt * 72.0 / 25.4
     
     # Scale to fit output page
-    if output_scale != 1.0:
-        transform = mult(transform, scale(output_scale, output_scale))
+    if eff_output_scale != 1.0:
+        transform = mult(transform, scale(eff_output_scale, eff_output_scale))
     
     # Position and center within the physical output cell
     phys_cell_w = output_width / columns_i
     phys_cell_h = output_height / rows_i
     
-    phys_page_w = scaled_page_width * output_scale
-    phys_page_h = scaled_page_height * output_scale
+    phys_page_w = scaled_page_width * eff_output_scale
+    phys_page_h = scaled_page_height * eff_output_scale
     
     phys_center_x = (phys_cell_w - phys_page_w) / 2
     phys_center_y = (phys_cell_h - phys_page_h) / 2
@@ -372,8 +403,9 @@ def calculate_page_transform(page: pikepdf.Page, row, column, ref_width, ref_hei
     phys_cell_x = column * phys_cell_w
     phys_cell_y = row * phys_cell_h
     
-    final_phys_x = phys_cell_x + phys_center_x + (ht_pts * output_scale)
-    final_phys_y = phys_cell_y + phys_center_y + (vt_pts * output_scale)
+    # Absolute physical translation on output sheet (1 mm in UI = 1 mm on paper)
+    final_phys_x = phys_cell_x + phys_center_x + ht_pts
+    final_phys_y = phys_cell_y + phys_center_y + vt_pts
     
     transform = mult(transform, translate(final_phys_x, final_phys_y))
     
@@ -384,7 +416,7 @@ def draw_overlay_with_transform(pdf_writer: pikepdf.Pdf, target_page: pikepdf.Pa
     Draw a source page onto a target page using a transformation matrix.
     Uses pikepdf Form XObjects to safely encapsulate the source page content.
     """
-    cropbox = source_page.get("/CropBox", source_page.mediabox)
+    cropbox = source_page.cropbox
     xobj = source_page.as_form_xobject(handle_transformations=False)
     xobj.BBox = cropbox
     xobj = pdf_writer.copy_foreign(xobj)
@@ -426,6 +458,34 @@ def draw_overlay_with_transform(pdf_writer: pikepdf.Pdf, target_page: pikepdf.Pa
     else:
         target_page.Contents = pdf_writer.make_stream(content)
 
+    # Preserve external URI link annotations with transformed coordinates
+    if "/Annots" in source_page:
+        try:
+            for annot in source_page.Annots:
+                if annot.get("/Subtype") == pikepdf.Name.Link and "/Rect" in annot and "/A" in annot:
+                    action = annot["/A"]
+                    if action.get("/S") == pikepdf.Name.URI and "/URI" in action:
+                        r = [float(v) for v in annot["/Rect"]]
+                        corners = [(r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3])]
+                        tx = [a * x + c * y + e for x, y in corners]
+                        ty = [b * x + d * y + f for x, y in corners]
+                        new_rect = pikepdf.Array([min(tx), min(ty), max(tx), max(ty)])
+                        new_annot = pikepdf.Dictionary(
+                            Type=pikepdf.Name.Annot,
+                            Subtype=pikepdf.Name.Link,
+                            Rect=new_rect,
+                            Border=annot.get("/Border", pikepdf.Array([0, 0, 0])),
+                            A=pikepdf.Dictionary(
+                                S=pikepdf.Name.URI,
+                                URI=action["/URI"],
+                            ),
+                        )
+                        if "/Annots" not in target_page:
+                            target_page.Annots = pikepdf.Array()
+                        target_page.Annots.append(pdf_writer.make_indirect(new_annot))
+        except Exception:
+            pass
+
 # from pdfbooklet import *
 from pdfbooklet.files_chooser import Chooser
 
@@ -434,12 +494,23 @@ import locale
 
 try:
     locale.setlocale(locale.LC_ALL, '')
+    locale.setlocale(locale.LC_NUMERIC, 'C')
 except locale.Error:
     pass
 
-locale_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'share', 'locale')
-if not os.path.exists(locale_dir):
-    locale_dir = '/usr/share/locale'
+_candidate_locale_dirs = [
+    os.path.join(getattr(sys, '_MEIPASS', ''), 'share', 'locale') if getattr(sys, 'frozen', False) else '',
+    os.path.join(getattr(sys, '_MEIPASS', ''), 'locale') if getattr(sys, 'frozen', False) else '',
+    os.path.join(os.path.dirname(os.path.abspath(sys.executable)), 'locale') if getattr(sys, 'frozen', False) else '',
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'locale'),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'share', 'locale'),
+    '/usr/share/locale',
+]
+locale_dir = '/usr/share/locale'
+for _cand in _candidate_locale_dirs:
+    if _cand and os.path.exists(_cand):
+        locale_dir = _cand
+        break
 gettext.install('pdfbooklet', locale_dir)
 
 debug_b = 0
@@ -872,7 +943,9 @@ class TxtOnly :
                             inputFiles_a[i + 1] = filename
 
                     self.loadPdfFiles()
-                    if "pageselection" in config["options"] :
+                    if "pageSelection" in config["options"] :
+                            self.selection_s = config["options"]["pageSelection"]
+                    elif "pageselection" in config["options"] :
                             self.selection_s = config["options"]["pageselection"]
 
 
@@ -988,14 +1061,24 @@ class TxtOnly :
                 page0 = inputFile_a[fileName].pages[ref_page]
             except :
                 print(_("The reference page is invalid. We use the first page"))
+                ref_page = 0
                 page0 = inputFile_a[fileName].pages[0]
 
-            rect = pikepdf.Rectangle(page0.get("/CropBox", page0.mediabox))
-            source_rotation = int(page0.get("/Rotate", 0))
+            rect = pikepdf.Rectangle(page0.cropbox)
+            raw_pdf_rot = get_page_rotate(page0)
+            pdf_ccw_rot = (360 - raw_pdf_rot) % 360
+            ref_shuffler_rot = 0
+            ref_conf_key = f"{ref_file}:{ref_page + 1}"
+            if ref_conf_key in config and "shuffler_rotate" in config[ref_conf_key]:
+                try:
+                    ref_shuffler_rot = int(config[ref_conf_key]["shuffler_rotate"])
+                except Exception:
+                    ref_shuffler_rot = 0
+            source_rotation = (pdf_ccw_rot + ref_shuffler_rot) % 360
             llx_i = 0
             lly_i = 0
             
-            if source_rotation in [90, -270, 270, -90]:
+            if source_rotation in [90, 270]:
                 urx_i = float(rect.height)
                 ury_i = float(rect.width)
             else:
@@ -1014,6 +1097,7 @@ class TxtOnly :
         oHeight_i = ury_i * rows_i
 
         if radiosize == 1 :
+            outputScale = 1.0
             mediabox_l = [oWidth_i, oHeight_i, columns_i, rows_i]
         elif radiosize == 2 :                         # size = no change
             if oWidth_i < oHeight_i :                           # set orientation
@@ -1704,7 +1788,8 @@ class gtkGui(TxtOnly):
                 userGuide_s = found_path
             subprocess.Popen(["xdg-open", userGuide_s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            os.startfile(sfp(userGuide_s))
+            doc_path = sfp2(userGuide_s) if os.path.exists(sfp2(userGuide_s)) else sfp(userGuide_s)
+            os.startfile(doc_path)
 
 
     def pdfBooklet_online_doc(self, widget) :
@@ -1850,6 +1935,8 @@ class gtkGui(TxtOnly):
             return False
         if ref_page > 0 :
             system_ref_page = ref_page - 1          # system numbering start from 0 and not 1
+        else :
+            system_ref_page = 0
         ini.output_page_size(radiosize, ref_file, system_ref_page, logdata)
 
         return True
@@ -1881,6 +1968,8 @@ class gtkGui(TxtOnly):
                         widget.set_active(True)
 
                 else :
+                    if option == "creep" and str(value).strip() == "":
+                        value = "0"
                     widget.set_text(value)
 
 
@@ -2413,9 +2502,12 @@ class gtkGui(TxtOnly):
         input_stream.close()
 
 
-        # draw middle line
-
-        if ((ini.booklet > 0 and len(inputFiles_a) > 0)
+        # draw middle line (only for standard horizontal booklets, not calendar mode, unless explicitly requested)
+        is_calendar_mode = (
+            ("presetOrientation2" in self.arw and self.arw["presetOrientation2"].get_active() == True)
+            or (columns_i == 1 and rows_i > 1)
+        )
+        if ((ini.booklet > 0 and not is_calendar_mode and len(inputFiles_a) > 0)
             or self.arw["draw_middle_line"].get_active() == True) :
             cr.save()
             cr.set_line_width(1)
@@ -2473,7 +2565,8 @@ class gtkGui(TxtOnly):
             current_pages = list(self.ar_pages.values())[0]
             pageRef_s = current_pages[i]
             file_number, page_number = pageRef_s.split(":")
-            page_number = int(page_number) + 1
+            raw_page_number = int(page_number)
+            page_number = raw_page_number + 1
             if file_number == "1" :
                 pageNumber = str(page_number)
             else :
@@ -2487,12 +2580,8 @@ class gtkGui(TxtOnly):
             rowpos_i = previewRowPos_a[a[0]] - (rowHeight / 2)
             x1,x2 = colpos_i,rowpos_i
 
-            # draw page number
-            if self.arw["hide_numbers"].get_active() == 0 :
-                # TODO cr.select_font_face("Georgia",
-    ##                cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
-    ##            AttributeError: 'gi.repository.cairo' object has no attribute 'FONT_SLANT_NORMAL'
-    ##            Remplacé par 0 et 1 ci-dessous
+            # draw page number (skip blank pages where raw_page_number < 0)
+            if self.arw["hide_numbers"].get_active() == 0 and raw_page_number >= 0 :
                 cr.select_font_face("Georgia", 0, 1)
                 cr.set_font_size(fontsize_i)
                 x_bearing, y_bearing, txtWidth, txtHeight = cr.text_extents(pageNumber)[:4]
@@ -2526,13 +2615,13 @@ class gtkGui(TxtOnly):
 
             # is this page odd or even ?
             if self.arw["evenpages"].get_active() == 1 :
-                if int(pageNumber) % 2 == 0 :
+                if raw_page_number >= 0 and int(page_number) % 2 == 0 :
                     cr.set_source_rgb(0, 0, 1)
                     draw_page_b = True
                     type_s = "even"
 
             elif self.arw["oddpages"].get_active() == 1 :
-                if int(pageNumber) % 2 == 1 :
+                if raw_page_number >= 0 and int(page_number) % 2 == 1 :
                     cr.set_source_rgb(0, 0, 1)
                     draw_page_b = True
                     type_s = "odd"
@@ -2556,18 +2645,13 @@ class gtkGui(TxtOnly):
 
             # draw rectangle
             if draw_page_b == True :
-
-                if hasattr(self, 'myselectedpage') and self.myselectedpage and ":" in self.myselectedpage:
-                    try:
-                        file_number, page_number = self.myselectedpage.split(":")
-                        # selected_ref = file_number + ":" + str(int(page_number) - 1) # Unused?
-        
-        
-                        coord = [left, top]
-                        cr.set_line_width(3)
-                        cr.rectangle(coord[0], coord[1],  columnWidth, rowHeight)
-                        cr.stroke()
-                    except: pass
+                try:
+                    coord = [left, top]
+                    cr.set_line_width(3)
+                    cr.rectangle(coord[0], coord[1], columnWidth, rowHeight)
+                    cr.stroke()
+                except Exception:
+                    pass
 
 
             i += 1
@@ -2671,17 +2755,19 @@ class gtkGui(TxtOnly):
 
 
         if event == None :                  # Click on a radio button
-            if self.thispage.get_active() == 1 :
-                pageId = str(selected_page[2]) + ":" + str(selected_page[3])
-                Id = pageId
-            elif self.evenpages.get_active() == 1 :
+            if self.evenpages.get_active() == 1 :
                 Id = "even"
             elif self.oddpages.get_active() == 1 :
                 Id = "odd"
-            else :         # first button, pages in this position
-                humanReadableRow_i = rows_i - selected_page[4]
-                Id = str(str(humanReadableRow_i) + "," + str(selected_page[5] + 1))
-                Id = str(str(selected_page[5] + 1) + "," + str(humanReadableRow_i))
+            elif isinstance(selected_page, (list, tuple)) and len(selected_page) >= 6 :
+                if self.thispage.get_active() == 1 :
+                    pageId = str(selected_page[2]) + ":" + str(selected_page[3])
+                    Id = pageId
+                else :         # first button, pages in this position
+                    humanReadableRow_i = rows_i - selected_page[4]
+                    Id = str(str(humanReadableRow_i) + "," + str(selected_page[5] + 1))
+            else :
+                return
 
         elif event.type == Gdk.EventType.BUTTON_PRESS:
             if event.button == 3 :            # right click, runs the context menu
@@ -2771,7 +2857,7 @@ class gtkGui(TxtOnly):
 
 
 
-                if event.state != Gdk.ModifierType.CONTROL_MASK :        # If Control not pressed, delete previous selection
+                if not (event.state & Gdk.ModifierType.CONTROL_MASK) :        # If Control not pressed, delete previous selection
                     selectedIndex_a = {}
                     selected_pages_a = []
 
@@ -2780,9 +2866,8 @@ class gtkGui(TxtOnly):
                 selected_pages_a.append(selected_page)
 
 
-                # force the "draw" signal to update the display
-                self.arw["drawingarea1"].hide()
-                self.arw["drawingarea1"].show()
+                # force the "draw" signal to update the display without hide/show flicker
+                self.arw["drawingarea1"].queue_draw()
 
 
 
@@ -2793,7 +2878,7 @@ class gtkGui(TxtOnly):
             return
 
         # Load settings in transformation dialogs
-        if event.state != Gdk.ModifierType.CONTROL_MASK :       # but only if CONTROL is not pressed
+        if event is None or not (event.state & Gdk.ModifierType.CONTROL_MASK) :       # but only if CONTROL is not pressed
             self.load_settings_in_dialog(Id)
 
 
@@ -3213,7 +3298,7 @@ class gtkGui(TxtOnly):
 
     def previewNext(self, dummy, event=None) :
         global selected_page, selectedIndex_a
-        if event.state != Gdk.ModifierType.CONTROL_MASK :
+        if event is None or not (event.state & Gdk.ModifierType.CONTROL_MASK) :
             selected_page = None
             selectedIndex_a = {}
         self.previewPage += 1
@@ -3223,7 +3308,7 @@ class gtkGui(TxtOnly):
 
     def previewPrevious(self, dummy, event = None) :
         global selected_page, selectedIndex_a
-        if event.state != Gdk.ModifierType.CONTROL_MASK :
+        if event is None or not (event.state & Gdk.ModifierType.CONTROL_MASK) :
             selected_page = None
             selectedIndex_a = {}
         self.previewPage -= 1
@@ -3254,8 +3339,11 @@ class gtkGui(TxtOnly):
     def preview2(self, widget) :
         global selected_page
         selected_page = None
-        previewPage = int(widget.get_text())
-        self.previewPage = previewPage - 1
+        try:
+            previewPage = int(widget.get_text())
+        except ValueError:
+            previewPage = 1
+        self.previewPage = max(0, previewPage - 1)
         self.arw["previewEntry"].set_text(str(self.previewPage + 1))
         if self.arw["automaticUpdate"].get_active() == 0 :  # If automatic update is not disabled
             self.preview(self.previewPage)                # update the preview
@@ -3274,27 +3362,17 @@ class gtkGui(TxtOnly):
             if value_s != "" and value2_s != "" :
                 previewPage = self.arw["previewEntry"].get_text()
                 if previewPage != "" :
-                    self.preview(int(previewPage) - 1)
-                return
+                    try:
+                        p_idx = max(0, int(previewPage) - 1)
+                    except ValueError:
+                        p_idx = 0
+                    self.preview(p_idx)
+                return False
             else :
-                return
-##        self.preview(self.previewPage)
+                return False
         if self.arw["automaticUpdate"].get_active() == 0 :  # If automatic update is not disabled
             self.preview(self.previewPage)                # update the preview
-
-
-
-
-
-
-    def preview2(self, widget) :
-        global selected_page
-        selected_page = None
-        previewPage = int(widget.get_text())
-        self.previewPage = previewPage - 1
-        self.arw["previewEntry"].set_text(str(self.previewPage + 1))
-        if self.arw["automaticUpdate"].get_active() == 0 :  # If automatic update is not disabled
-            self.preview(self.previewPage)                # update the preview
+        return False
 
     def manage_backup(self) :
         return
@@ -3426,7 +3504,8 @@ class gtkGui(TxtOnly):
                     crop = [0., 0., 0., 0.]
                     if Id in config:
                          if "shuffler_rotate" in config[Id]:
-                             angle = int(config[Id]["shuffler_rotate"])
+                             # Convert PdfBooklet CCW angle back to PdfArranger CW angle
+                             angle = (360 - (int(config[Id]["shuffler_rotate"]) % 360)) % 360
                              
                          if "shuffler_crop" in config[Id]:
                              try:
@@ -3494,20 +3573,22 @@ class gtkGui(TxtOnly):
                 angle = 0
             
             if angle != 0 :
-                if angle == 90 :        # In Pdf format, global rotation rotates clockwise,
-                    angle = 270         # fine rotation (used by PdfBooklet) rotates counterclockwise.
-
-                elif angle == -90 :
-                    angle = 90
+                # In PDF / PdfArranger format, rotation is clockwise;
+                # PdfBooklet matrices rotate counter-clockwise.
+                angle = (360 - (angle % 360)) % 360
 
             # Use Id_cfg for config storage
             if not Id_cfg in config and angle != 0 :
                 config[Id_cfg] = {}
                 # defaults
-                config[Id_cfg]["htranslate"] = 0
-                config[Id_cfg]["vtranslate"] = 0
-                config[Id_cfg]["scale"] = 1
-                config[Id_cfg]["rotate"] = 0
+                config[Id_cfg]["htranslate"] = '0'
+                config[Id_cfg]["vtranslate"] = '0'
+                config[Id_cfg]["scale"] = '100'
+                config[Id_cfg]["xscale"] = '100'
+                config[Id_cfg]["yscale"] = '100'
+                config[Id_cfg]["rotate"] = '0'
+                config[Id_cfg]["vflip"] = False
+                config[Id_cfg]["hflip"] = False
 
             if angle != 0 :
                 config[Id_cfg]["shuffler_rotate"] = angle
@@ -3551,51 +3632,42 @@ class gtkGui(TxtOnly):
 
         global selected_page, selected_pages_a, rows_i
 
-        for this_selected_page in selected_pages_a :
+        def _store_transform(target_id):
+            if target_id not in config or not isinstance(config[target_id], dict):
+                config[target_id] = {}
+            config[target_id]["htranslate"] = self.arw["htranslate1"].get_text()
+            config[target_id]["vtranslate"] = self.Vtranslate1.get_text()
+            config[target_id]["scale"] = self.scale1.get_text()
+            config[target_id]["rotate"] = self.rotation1.get_text()
+            config[target_id]["xscale"] = self.arw["xscale1"].get_text()
+            config[target_id]["yscale"] = self.arw["yscale1"].get_text()
+            config[target_id]["vflip"] = self.arw["vflip1"].get_active()
+            config[target_id]["hflip"] = self.arw["hflip1"].get_active()
 
-            if this_selected_page == None :
-                showwarning(_("No selection"), _("There is no selected page. \nPlease select a page first. "))
-                return
-            # this_selected_page 4 and 5 contain the correct page reference, including the global rotation.
-            humanReadableRow_i = rows_i - this_selected_page[4]
-            Id = str(str(humanReadableRow_i) + "," + str(this_selected_page[5] + 1))
+        if self.evenpages.get_active() == 1 :
+            _store_transform("even")
+        elif self.oddpages.get_active() == 1 :
+            _store_transform("odd")
+        else :
+            for this_selected_page in selected_pages_a :
+                if this_selected_page == None :
+                    showwarning(_("No selection"), _("There is no selected page. \nPlease select a page first. "))
+                    return False
+                # this_selected_page 4 and 5 contain the correct page reference, including the global rotation.
+                humanReadableRow_i = rows_i - this_selected_page[4]
+                Id = str(str(humanReadableRow_i) + "," + str(this_selected_page[5] + 1))
 
-            pageId = str(this_selected_page[2]) + ":" + str(this_selected_page[3])
+                pageId = str(this_selected_page[2]) + ":" + str(this_selected_page[3])
 
-            # if transformation is for this page only, use page ref instead of position ref
-            if self.thispage.get_active() == 1 :
-                Id = pageId
-            if self.evenpages.get_active() == 1 :
-                Id = "even"
-            if self.oddpages.get_active() == 1 :
-                Id = "odd"
+                # if transformation is for this page only, use page ref instead of position ref
+                if self.thispage.get_active() == 1 :
+                    Id = pageId
 
-            config[Id] = {}
-
-            config[Id]["htranslate"] = self.arw["htranslate1"].get_text()     # data from the gui unmodified
-            config[Id]["vtranslate"] = self.Vtranslate1.get_text()
-            config[Id]["scale"] = self.scale1.get_text()
-            config[Id]["rotate"] = self.rotation1.get_text()
-            config[Id]["xscale"] = self.arw["xscale1"].get_text()
-            config[Id]["yscale"] = self.arw["yscale1"].get_text()
-            config[Id]["vflip"] = self.arw["vflip1"].get_active()
-            config[Id]["hflip"] = self.arw["hflip1"].get_active()
-        #if not force_update :
-            # prevent useless update. If no change, return.
-            # TODO : à débuguer
-##            a = repr(config[Id])
-##            if not "memory1" in self :
-##                memory1 = {}
-##                b = self.memory1["memory1"]
-##                if a == b :
-##                    return
-##            else :
-##                self.memory1["memory2"] = 0
-##            self.memory1["memory1"] = a
-##            self.memory1["memory2"] += 1
+                _store_transform(Id)
 
         if self.arw["automaticUpdate"].get_active() == 0 :  # If automatic update is not disabled
             self.preview(self.previewPage)                # update the preview
+        return False
 
 
     def resetTransformations(self, event = 0) :
@@ -3815,7 +3887,12 @@ class pdfRender():
 
             if a.count("-") > 0:
                 list2 = a.split("-")
-                serie = list(range(int(list2[0]) - 1, int(list2[1])))
+                p_start = int(list2[0]) - 1
+                p_end = int(list2[1]) - 1
+                if p_start <= p_end:
+                    serie = list(range(p_start, p_end + 1))
+                else:
+                    serie = list(range(p_start, p_end - 1, -1))
                 for x in serie :
                     page_s = docId_s + str(x)
                     pagesSel = pagesSel + [page_s]
@@ -3857,13 +3934,16 @@ class pdfRender():
     def createPageLayout(self, logdata = 1) :
         global config, rows_i, columns_i, cells_i, step_i, sections, output, input1, adobe_l
         global numfolio,prependPages, appendPages, ref_page, selection
-        global numPages, blankPages, pagesSel, llx_i, lly_i, urx_i, ury_i, mediabox_l, pgcount
+        global numPages, blankPages, pagesSel, llx_i, lly_i, urx_i, ury_i, mediabox_l, pgcount, totalPages
 
         ar_pages = {}
         ar_cahiers = {}
         index=0
         last=0
         cells_i = columns_i * rows_i
+
+        if pgcount <= 0 or not pagesSel :
+            return (ar_pages, [], ar_cahiers)
 
 
         # Create booklets
@@ -3880,6 +3960,8 @@ class pdfRender():
                 numcahiers = int(folios / numfolio)
                 if (folios % numfolio > 0) :
                     numcahiers = numcahiers + 1
+            if numcahiers < 1 :
+                numcahiers = 1
 
             # equilibrate booklets size
             minfolios = int(folios / numcahiers)
@@ -3917,8 +3999,8 @@ class pdfRender():
                 pages = []
                 for a in range(start, start + cells_i) :
                     PageX = start + (a % step_i)
-                    if PageX > totalPages :
-                        pages = pages + [-1]
+                    if PageX >= len(pagesSel) :
+                        pages = pages + ["1:-1"]
                     else :
                         pages = pages + [pagesSel[PageX]]
                 ar_pages[index] = pages
@@ -3972,9 +4054,9 @@ class pdfRender():
             if rest > 0 :
                 blank = []
                 for i in range(len(ar_pages[0])) :
-                    blank.append(["1:-1"])
+                    blank.append("1:-1")
                 for i in range(rest) :
-                    ar_pages[len(ar_pages) + i] = blank
+                    ar_pages[len(ar_pages) + i] = list(blank)
 
 
             # create a copy of ar_pages
@@ -4008,8 +4090,8 @@ class pdfRender():
 
             elif sheets == 2 :              # more complicated...
 
-                userpagesA = app.imposition[0]
-                userpagesB = app.imposition[1]
+                userpagesA = ini.imposition[0]
+                userpagesB = ini.imposition[1]
                 step = len(userpagesA)
 
                 for key in range(0,len(ar_pages),2) :
@@ -4063,7 +4145,6 @@ class pdfRender():
         import os
         import time
         import pikepdf
-        from concurrent.futures import ProcessPoolExecutor
 
         # Ensure all rendering parameters are up-to-date from GUI
         group = app.arw["radiosize1"].get_group()
@@ -4100,8 +4181,7 @@ class pdfRender():
 
         # Prepare Creep
         creep_mm = 0.0
-        creep_factor_mm = 0.0
-        start_pages = [0]
+        booklet_ranges = []
         
         try:
             # Use config as primary source of truth, fallback to ini/app for live GUI state
@@ -4127,10 +4207,10 @@ class pdfRender():
                             mem = 0
                             sorted_keys = sorted(ar_cahiers.keys())
                             for k in sorted_keys:
-                                val = ar_cahiers[k]
-                                if val > 0: creep_factor_mm = creep_mm / val
+                                val = int(ar_cahiers[k])
+                                factor_mm = (creep_mm / (val - 1)) if val > 1 else creep_mm
                                 page_val = val * 2
-                                start_pages.append(page_val + mem)
+                                booklet_ranges.append((mem, mem + page_val, val, factor_mm))
                                 mem += page_val
                     except: pass
         except: pass
@@ -4148,14 +4228,23 @@ class pdfRender():
              specs = ar_pages[a]
              enriched_specs = []
              
-             Htrans_base_mm = 0
-             if creep_mm != 0:
+             Htrans_base_mm = 0.0
+             if creep_mm != 0 and booklet_ranges:
                  s_p = 0
-                 for x in start_pages:
-                     if current_idx >= x: s_p = x
+                 bk_val = booklet_ranges[-1][2]
+                 bk_factor_mm = booklet_ranges[-1][3]
+                 for start_p, end_p, val, factor_mm in booklet_ranges:
+                     if start_p <= current_idx < end_p:
+                         s_p = start_p
+                         bk_val = val
+                         bk_factor_mm = factor_mm
+                         break
                  
                  page_in_bk = current_idx - s_p
-                 Htrans_base_mm = creep_factor_mm * (int(page_in_bk/2))
+                 folio_from_inner = max(0, (bk_val - 1) - (page_in_bk // 2))
+                 # Following Averell7's original design: internal sheet has 0 shift,
+                 # outer sheets shift outward (col 0 shifts left '-', col 1 shifts right '+').
+                 Htrans_base_mm = -bk_factor_mm * folio_from_inner
              
              for idx_spec, spec in enumerate(specs):
                  if spec:
@@ -4196,13 +4285,13 @@ class pdfRender():
                                  if conf_key in config and key in config[conf_key]:
                                      try: val = cast_fn(config[conf_key][key])
                                      except: pass
-                                 eo_id = "even" if ((i+1) % 2 == 0) else "odd"
+                                 eo_id = "even" if ((int(p_n_str) + 1) % 2 == 0) else "odd"
                                  if eo_id in config and key in config[eo_id]:
                                      try: val = cast_fn(config[eo_id][key])
                                      except: pass
                                  return val
                                  
-                             manual_rot = get_conf_val("rotate", 0, int)
+                             manual_rot = get_conf_val("rotate", 0.0, float)
                              manual_scale = get_conf_val("scale", 100.0, float)
                              manual_xs = get_conf_val("xscale", 100.0, float)
                              manual_ys = get_conf_val("yscale", 100.0, float)
@@ -4216,8 +4305,6 @@ class pdfRender():
                              manual_hf = get_conf_val("hflip", 0, my_bool)
                              manual_vf = get_conf_val("vflip", 0, my_bool)
                              
-                             rot += manual_rot
-                             
                              if Htrans_base_mm != 0 and idx_spec < len(ar_layout):
                                  col = ar_layout[idx_spec][1]
                                  if col == 0: manual_ht += Htrans_base_mm
@@ -4225,7 +4312,7 @@ class pdfRender():
                              
                              import json
                              spec_json = {
-                                 "f": f_n_str, "p": p_n_str, "rot": rot,
+                                 "f": f_n_str, "p": p_n_str, "rot": rot, "m_rot": manual_rot,
                                  "sc": manual_scale, "ht": manual_ht, "vt": manual_vt,
                                  "xs": manual_xs, "ys": manual_ys, "hf": manual_hf, "vf": manual_vf
                              }
@@ -4257,9 +4344,15 @@ class pdfRender():
             return 0
         g_hf = my_bool(config.get("output", {}).get("hflip", 0)) if "output" in config else 0
         g_vf = my_bool(config.get("output", {}).get("vflip", 0)) if "output" in config else 0
+
+        autoscale_b = True
+        if "options" in config and "autoscale" in config["options"]:
+            autoscale_b = bool(my_bool(config["options"]["autoscale"]))
+        elif hasattr(app, "arw") and "autoscale" in app.arw:
+            autoscale_b = bool(app.arw["autoscale"].get_active())
         
         global_transforms = (g_scale, g_xs, g_ys, g_ht, g_vt, g_rot, g_hf, g_vf)
-        output_params = (mediabox_l, outputScale, columns_i, rows_i, global_transforms)
+        output_params = (mediabox_l, outputScale, columns_i, rows_i, global_transforms, autoscale_b)
         config_params = (urx_i, ury_i)
         file_paths = inputFiles_a
         
@@ -4332,18 +4425,18 @@ def extractBase() :
     """
 
     # read current dir
-    prog_s = sys.argv[0]
+    prog_s = sys.executable if getattr(sys, 'frozen', False) else sys.argv[0]
     pwd_s = os.path.abspath(".")
     name_s = os.path.basename(prog_s)
     _sep_s = '\\'
 
     # extract program path
     # if path starts with \ or x:\ absolute path
-    if _sep_s == prog_s[0] or \
+    if getattr(sys, 'frozen', False) or os.path.isabs(prog_s) or _sep_s == prog_s[0] or \
        (2 < len(prog_s) and \
         ":" == prog_s[1] and
         _sep_s == prog_s[2]) :
-        base_s = os.path.dirname(prog_s)
+        base_s = os.path.dirname(os.path.abspath(prog_s))
     # if it starts with ./  , relative path
     elif 1 < len(prog_s) and \
          "." == prog_s[0] and \
@@ -4356,17 +4449,17 @@ def extractBase() :
         path_s = os.path.join(pwd_s, prog_s)
         base_s = os.path.dirname(path_s)
     else :
-        tab_a = os.environ["PATH"].split(":")
+        tab_a = os.environ.get("PATH", "").split(os.pathsep)
         limit = len(tab_a)
         found = False
         for scan in range(limit) :
             path_s = os.path.join(tab_a[scan], prog_s)
-            if os.path.exists(path_s) :
+            if os.path.exists(path_s) or os.path.exists(path_s + ".exe"):
                 base_s = os.path.dirname(path_s)
                 found = True
                 break
         if not found :
-            raise ScriptRt("path to program is undefined")
+            base_s = os.path.dirname(os.path.abspath(__file__))
 
     # application base import
     return(name_s, pwd_s, base_s)
@@ -4455,17 +4548,34 @@ def main() :
 
     if 'linux' in sys.platform :
         cfg_path_u = os.path.join(os.environ['HOME'], ".config", "pdfbooklet")
-        if os.path.isdir(cfg_path_u) == False :
-            os.mkdir(cfg_path_u)
+        os.makedirs(cfg_path_u, exist_ok=True)
 
-        share_path_u = "/usr/share/pdfbooklet"
-        if os.path.isdir(share_path_u) == False :
-            os.mkdir(share_path_u)
+        local_share = os.path.dirname(os.path.abspath(__file__))
+        if os.path.isdir(os.path.join(local_share, "data")) :
+            share_path_u = local_share
+        else :
+            share_path_u = "/usr/share/pdfbooklet"
 
     else:
-        #TODO : this is not the recommended situation.
+        _meipass = getattr(sys, '_MEIPASS', '')
+        _local_dir = os.path.dirname(os.path.abspath(__file__))
+        if _meipass and os.path.isdir(os.path.join(_meipass, "data")):
+            share_path_u = _meipass
+        elif os.path.isdir(os.path.join(prog_path_u, "data")):
+            share_path_u = prog_path_u
+        elif os.path.isdir(os.path.join(_local_dir, "data")):
+            share_path_u = _local_dir
+        else:
+            share_path_u = prog_path_u
         cfg_path_u = prog_path_u
-        share_path_u = prog_path_u
+        try:
+            _test_cfg = os.path.join(cfg_path_u, "pdfbooklet.cfg")
+            with open(_test_cfg, "a"):
+                pass
+        except Exception:
+            cfg_path_u = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "pdfbooklet")
+            if not os.path.isdir(cfg_path_u):
+                os.makedirs(cfg_path_u, exist_ok=True)
 
 
 
@@ -4601,7 +4711,11 @@ def batch_render_worker(chunk_data, ar_layout, file_paths, output_params, config
         import pikepdf
         
         # Unpack parameters
-        if len(output_params) == 5:
+        autoscale_b = True
+        if len(output_params) == 6:
+            mediabox_l, outputScale, columns_i, rows_i, global_transforms, autoscale_b = output_params
+            g_scale, g_xs, g_ys, g_ht, g_vt, g_rot, g_hf, g_vf = global_transforms
+        elif len(output_params) == 5:
             mediabox_l, outputScale, columns_i, rows_i, global_transforms = output_params
             g_scale, g_xs, g_ys, g_ht, g_vt, g_rot, g_hf, g_vf = global_transforms
         else:
@@ -4613,7 +4727,7 @@ def batch_render_worker(chunk_data, ar_layout, file_paths, output_params, config
         urx_i, ury_i = config_params
         
         # Open readers
-        global _PIKEPDF_READERS_CACHE, _PIKEPDF_READERS_PATHS
+        global _PIKEPDF_READERS_CACHE, _PIKEPDF_READERS_PATHS, inputFile_a
         readers = {}
         for fid, path in file_paths.items():
             try:
@@ -4624,7 +4738,13 @@ def batch_render_worker(chunk_data, ar_layout, file_paths, output_params, config
                 if fid in _PIKEPDF_READERS_CACHE and _PIKEPDF_READERS_PATHS.get(fid) == cache_key:
                     readers[fid] = _PIKEPDF_READERS_CACHE[fid]
                 else:
-                    reader = pikepdf.Pdf.open(path)
+                    try:
+                        reader = pikepdf.Pdf.open(path)
+                    except pikepdf.PasswordError:
+                        if isinstance(globals().get("inputFile_a"), dict) and path in inputFile_a:
+                            reader = inputFile_a[path]
+                        else:
+                            raise
                     readers[fid] = reader
                     _PIKEPDF_READERS_CACHE[fid] = reader
                     _PIKEPDF_READERS_PATHS[fid] = cache_key
@@ -4655,6 +4775,7 @@ def batch_render_worker(chunk_data, ar_layout, file_paths, output_params, config
                             file_n = int(parts.get("f", -1))
                             page_n = int(parts.get("p", -1))
                             rotation = int(parts.get("rot", 0))
+                            m_rot = float(parts.get("m_rot", 0.0))
                             m_scale = float(parts.get("sc", 100.0))
                             m_ht = float(parts.get("ht", 0.0))
                             m_vt = float(parts.get("vt", 0.0))
@@ -4667,6 +4788,7 @@ def batch_render_worker(chunk_data, ar_layout, file_paths, output_params, config
                             file_n_str = parts[0]
                             page_n_str = parts[1]
                             rotation = 0
+                            m_rot = 0.0
                             if len(parts) > 2:
                                 rotation = int(parts[2])
                                 
@@ -4681,11 +4803,6 @@ def batch_render_worker(chunk_data, ar_layout, file_paths, output_params, config
                             reader = readers[file_n]
                             if page_n < len(reader.pages):
                                 source_page = reader.pages[page_n]
-                                
-                                # Apply booklet rotation temporarily
-                                original_rotation = int(source_page.get("/Rotate", 0))
-                                if rotation != 0:
-                                    source_page.Rotate = original_rotation + rotation
                                 
                                 # Resolve functions via sys.modules (works both frozen and non-frozen)
                                 import sys as _sys
@@ -4704,9 +4821,12 @@ def batch_render_worker(chunk_data, ar_layout, file_paths, output_params, config
                                     output_scale=output_params[1],
                                     columns_i=output_params[2],
                                     rows_i=output_params[3],
-                                    rotate_to_fit=False, # Rotation handled above
+                                    rotate_to_fit=autoscale_b,
                                     m_scale=m_scale, m_ht=m_ht, m_vt=m_vt,
-                                    m_xs=m_xs, m_ys=m_ys, m_hf=m_hf, m_vf=m_vf
+                                    m_xs=m_xs, m_ys=m_ys, m_hf=m_hf, m_vf=m_vf,
+                                    autoscale=autoscale_b,
+                                    shuffler_rot=rotation,
+                                    m_rot=m_rot
                                 )
                                 
                                 # Apply Global Transformations
@@ -4729,13 +4849,6 @@ def batch_render_worker(chunk_data, ar_layout, file_paths, output_params, config
                                     
                                 if g_ht_pts != 0.0 or g_vt_pts != 0.0:
                                     transform = transform.translated(g_ht_pts, g_vt_pts)
-                                
-                                # Restore original rotation so we don't mess up future uses
-                                if rotation != 0:
-                                    if original_rotation == 0 and "/Rotate" in source_page:
-                                        del source_page.Rotate
-                                    else:
-                                        source_page.Rotate = original_rotation
                                 
                                 # Merge transformed page
                                 draw_overlay_with_transform(writer, page, source_page, transform)

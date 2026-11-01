@@ -40,16 +40,30 @@ import sys
 sys.prefix = '/usr'
 
 
-data_files=[('/usr/share/pdfbooklet/data', glob.glob('pdfbooklet/data/*.*')),
-            ('/usr/share/pdfbooklet/documentation', glob.glob('./documentation/*.*')),          
-            ('/usr/share/applications', ['pdfbooklet/data/pdfbooklet.desktop']),
-            ('/usr/share/locale/fr/LC_MESSAGES', glob.glob('locale/fr/LC_MESSAGES/*.*')),
-            ('/usr/share/pixmaps', ['pdfbooklet/data/pdfbooklet.png']),
-            ('/usr/share/icons/hicolor/48x48/apps', ['pdfbooklet/data/pdfbooklet.png'])]
+data_files = [
+    ('/usr/share/pdfbooklet/data', [f for f in glob.glob('pdfbooklet/data/*.*') if os.path.isfile(f)]),
+    ('/usr/share/pdfbooklet/documentation', glob.glob('./documentation/*.*')),
+    ('/usr/share/applications', ['pdfbooklet/data/pdfbooklet.desktop']),
+    ('/usr/share/pixmaps', ['pdfbooklet/data/pdfbooklet.png']),
+    ('/usr/share/icons/hicolor/64x64/apps', ['pdfbooklet/data/pdfbooklet.png']),
+    ('/usr/share/icons/hicolor/scalable/apps', ['pdfbooklet/data/pdfbooklet.svg']),
+]
+
+for lang_dir in glob.glob('locale/*'):
+    if os.path.isdir(lang_dir):
+        lang = os.path.basename(lang_dir)
+        mo_files = glob.glob(os.path.join(lang_dir, 'LC_MESSAGES', '*.*'))
+        if mo_files:
+            data_files.append((f'/usr/share/locale/{lang}/LC_MESSAGES', mo_files))
+
+for root, _dirs, files in os.walk('pdfbooklet/data/icons'):
+    if files:
+        rel_dir = os.path.relpath(root, 'pdfbooklet').replace('\\', '/')
+        data_files.append((f'/usr/share/pdfbooklet/{rel_dir}', [os.path.join(root, f) for f in files]))
 
 
 setup(name='pdfbooklet',
-      version='3.1.6',
+      version='3.1.7',
       author='GAF Software',
       author_email='Averell7 at sourceforge dot net',
       maintainer='Tomas Julian Resquin',

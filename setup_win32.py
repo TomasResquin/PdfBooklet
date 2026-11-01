@@ -17,12 +17,14 @@ Requires MSYS2 packages:
     ...and pip install keyboard
 """
 
-VERSION = '3.1.6'
+VERSION = '3.1.7'
 
-from cx_Freeze import setup, Executable
 import os
 import sys
-import distutils
+try:
+    from setuptools import Command
+except ImportError:
+    from distutils.cmd import Command
 import shutil
 import glob
 
@@ -59,13 +61,18 @@ def adddir(relpath, warn_missing=True):
 
 
 def addlocale(name):
-    """Bundle compiled .mo locale files that are also present in build/mo."""
-    # PdfBooklet has its own locale dir at the project root
+    """Bundle compiled .mo locale files that are also present in locale/."""
+    supported_langs = {
+        d for d in os.listdir("locale")
+        if os.path.isdir(os.path.join("locale", d))
+    } if os.path.isdir("locale") else set()
     for path in glob.glob(
         os.path.join(sys.prefix, "share/locale/*/LC_MESSAGES/{}.mo".format(name))
     ):
         lang = os.path.split(os.path.split(os.path.split(path)[0])[0])[1]
-        addfile(os.path.relpath(path, sys.prefix))
+        base_lang = lang.split("_")[0].split("@")[0]
+        if not supported_langs or lang in supported_langs or base_lang in supported_langs:
+            addfile(os.path.relpath(path, sys.prefix))
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +214,125 @@ if os.path.isfile(gspawn):
     include_files.append((gspawn, 'gspawn-win64-helper.exe'))
 
 # ---------------------------------------------------------------------------
+# Safe bundle pruning (unused AV1/AVIF video codecs, Tcl/Tk, unused locales)
+# ---------------------------------------------------------------------------
+SAFE_PRUNE_DLL_PREFIXES = (
+    'libaom',
+    'libsvtav1enc',
+    'librav1e',
+    'libdav1d',
+    'libavif',
+    'libyuv',
+    'libpixbufloader-avif',
+    'pixbufloader-avif',
+    'tcl86',
+    'tk86',
+)
+
+SAFE_PRUNE_DIRS = (
+    '_tcl_data',
+    '_tk_data',
+    'tcl8',
+)
+
+ALLOWED_LOCALE_DOMAINS = {
+    'gtk30.mo',
+    'gtk30-properties.mo',
+    'glib20.mo',
+    'gdk-pixbuf.mo',
+    'pdfbooklet.mo',
+    'pdfshuffler.mo',
+}
+
+
+def prune_windows_bundle(bundle_dir):
+    """Safely remove unused codecs (AV1/AVIF), Tcl/Tk, and excess locales from a Windows build."""
+    if not os.path.isdir(bundle_dir):
+        return 0
+    removed_bytes = 0
+    supported_langs = {
+        d for d in os.listdir("locale")
+        if os.path.isdir(os.path.join("locale", d))
+    } if os.path.isdir("locale") else {'ar', 'cs', 'de', 'el', 'es', 'fr', 'it'}
+
+    for root, dirs, files in os.walk(bundle_dir, topdown=True):
+        # 1. Remove Tcl/Tk data directories and __pycache__
+        for d in list(dirs):
+            if d in SAFE_PRUNE_DIRS or d == '__pycache__':
+                full_d = os.path.join(root, d)
+                for r2, _, f2 in os.walk(full_d):
+                    for fn in f2:
+                        try:
+                            removed_bytes += os.path.getsize(os.path.join(r2, fn))
+                        except OSError:
+                            pass
+                shutil.rmtree(full_d, ignore_errors=True)
+                dirs.remove(d)
+
+        # 2. Remove unused AV1/AVIF/Tcl/Tk binaries and duplicate source files
+        for fn in list(files):
+            low = fn.lower()
+            full_f = os.path.join(root, fn)
+            should_remove = False
+            if low.endswith(('.dll', '.pyd')) and (
+                low.startswith(SAFE_PRUNE_DLL_PREFIXES)
+                or low.startswith('_tkinter')
+                or low.startswith('_avif')
+            ):
+                should_remove = True
+            elif low.endswith('.mo') and ('share' + os.sep + 'locale' in full_f):
+                rel_loc = full_f.split('share' + os.sep + 'locale' + os.sep, 1)[1]
+                lang = rel_loc.split(os.sep, 1)[0]
+                base_lang = lang.split('_')[0].split('@')[0]
+                if (lang not in supported_langs and base_lang not in supported_langs) or (
+                    low not in ALLOWED_LOCALE_DOMAINS
+                ):
+                    should_remove = True
+            elif low.endswith(('.py', '.pyc', '.po')) and (
+                '_internal' + os.sep + 'pdfbooklet' in full_f
+            ):
+                # Duplicate source/bytecode files inside PyInstaller data folder
+                should_remove = True
+
+            elif low == 'loaders.cache':
+                try:
+                    with open(full_f, 'r', encoding='utf-8') as f_in:
+                        cache_text = f_in.read()
+                    blocks = [
+                        b for b in cache_text.split('\n\n')
+                        if 'pixbufloader-avif' not in b.lower()
+                    ]
+                    with open(full_f, 'w', encoding='utf-8') as f_out:
+                        f_out.write('\n\n'.join(blocks))
+                except OSError:
+                    pass
+
+            if should_remove:
+                try:
+                    removed_bytes += os.path.getsize(full_f)
+                    os.remove(full_f)
+                except OSError:
+                    pass
+
+    # 3. Clean empty locale directories
+    for root, dirs, files in os.walk(bundle_dir, topdown=False):
+        if not dirs and not files and root != bundle_dir:
+            try:
+                os.rmdir(root)
+            except OSError:
+                pass
+
+    # 4. If this is a PyInstaller bundle (_internal/ exists), keep empty _tcl_data/_tk_data
+    #    dirs (0 bytes) in case pyi_rth__tkinter was baked into the bootloader.
+    internal_dir = os.path.join(bundle_dir, '_internal')
+    if os.path.isdir(internal_dir):
+        for tk_dir in ('_tcl_data', '_tk_data'):
+            os.makedirs(os.path.join(internal_dir, tk_dir), exist_ok=True)
+
+    return removed_bytes
+
+
+# ---------------------------------------------------------------------------
 # cx_Freeze build options
 # ---------------------------------------------------------------------------
 build_options = dict(
@@ -218,7 +344,17 @@ build_options = dict(
         'pdfbooklet.pdfarranger.utils',
         'keyboard',   # Windows-only: detect Ctrl key during drag & drop
     ],
-    excludes=['tkinter', 'test'],
+    excludes=[
+        'tkinter', '_tkinter', 'tcl', 'tk',
+        'test', 'unittest', 'pydoc', 'sqlite3', 'xmlrpc',
+        'PIL._avif', 'PIL.AvifImagePlugin',
+    ],
+    bin_excludes=[
+        'libaom.dll', 'libSvtAv1Enc.dll', 'libSvtAv1Enc-2.dll', 'libSvtAv1Enc-3.dll',
+        'librav1e.dll', 'libdav1d.dll', 'libdav1d-7.dll',
+        'libavif.dll', 'libavif-16.dll', 'libyuv.dll',
+        'libpixbufloader-avif.dll', 'tcl86.dll', 'tk86.dll',
+    ],
     include_files=include_files,
 )
 
@@ -241,7 +377,7 @@ msi_options = dict(
 # bdist_zip: portable ZIP distribution (no install needed)
 # Adapted directly from pdfarranger's bdist_zip command.
 # ---------------------------------------------------------------------------
-class bdist_zip(distutils.cmd.Command):
+class bdist_zip(Command):
     """Create a Windows portable .zip distribution."""
     description = 'create a "zip" distribution'
     user_options = []
@@ -258,6 +394,7 @@ class bdist_zip(distutils.cmd.Command):
         fullname = self.distribution.get_fullname()
         build_exe.build_exe = os.path.join(build_base, fullname)
         build_exe.run()
+        prune_windows_bundle(build_exe.build_exe)
         dist_dir = self.get_finalized_command('bdist').dist_dir
         archname = os.path.join(
             dist_dir,
@@ -270,21 +407,23 @@ class bdist_zip(distutils.cmd.Command):
 # ---------------------------------------------------------------------------
 # setup()
 # ---------------------------------------------------------------------------
-setup(
-    name='PdfBooklet',
-    author='GAF Software / Tomas Julian Resquin',
-    version=VERSION,
-    description='A simple application for creating booklets and other layouts from PDF files',
-    options=dict(build_exe=build_options, bdist_msi=msi_options),
-    cmdclass={'bdist_zip': bdist_zip},
-    packages=['pdfbooklet', 'pdfbooklet.pdfarranger', 'pdfbooklet.pdfarranger.utils'],
-    executables=[
-        Executable(
-            'pdfbooklet/pdfbooklet3.py',
-            # Disable console window for production builds
-            base='gui',
-            target_name='PdfBooklet.exe',
-            icon='pdfbooklet/data/pdfbooklet.ico',
-        )
-    ],
-)
+if __name__ == '__main__':
+    from cx_Freeze import setup, Executable
+    setup(
+        name='PdfBooklet',
+        author='GAF Software / Tomas Julian Resquin',
+        version=VERSION,
+        description='A simple application for creating booklets and other layouts from PDF files',
+        options=dict(build_exe=build_options, bdist_msi=msi_options),
+        cmdclass={'bdist_zip': bdist_zip},
+        packages=['pdfbooklet', 'pdfbooklet.pdfarranger', 'pdfbooklet.pdfarranger.utils'],
+        executables=[
+            Executable(
+                'pdfbooklet/pdfbooklet3.py',
+                # Disable console window for production builds
+                base='gui',
+                target_name='PdfBooklet.exe',
+                icon='pdfbooklet/data/pdfbooklet.ico',
+            )
+        ],
+    )

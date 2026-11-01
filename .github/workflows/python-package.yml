@@ -55,41 +55,41 @@ jobs:
     - name: Set up MSYS2 with full GTK3 stack
       uses: msys2/setup-msys2@v2
       with:
-        msystem: MINGW64
+        msystem: UCRT64
         update: true
         install: >-
-          mingw-w64-x86_64-gtk3
-          mingw-w64-x86_64-python-gobject
-          mingw-w64-x86_64-python-cairo
-          mingw-w64-x86_64-poppler
-          mingw-w64-x86_64-python-lxml
-          mingw-w64-x86_64-qpdf
-          mingw-w64-x86_64-pybind11
-          mingw-w64-x86_64-gettext
-          mingw-w64-x86_64-gnutls
-          mingw-w64-x86_64-python-pillow
-          mingw-w64-x86_64-python-dateutil
-          mingw-w64-x86_64-python-pip
-          mingw-w64-x86_64-libhandy
-          mingw-w64-x86_64-python-cx-freeze
-          mingw-w64-x86_64-python-pikepdf
+          mingw-w64-ucrt-x86_64-gtk3
+          mingw-w64-ucrt-x86_64-python-gobject
+          mingw-w64-ucrt-x86_64-python-cairo
+          mingw-w64-ucrt-x86_64-poppler
+          mingw-w64-ucrt-x86_64-python-lxml
+          mingw-w64-ucrt-x86_64-qpdf
+          mingw-w64-ucrt-x86_64-pybind11
+          mingw-w64-ucrt-x86_64-gettext
+          mingw-w64-ucrt-x86_64-gnutls
+          mingw-w64-ucrt-x86_64-python-pillow
+          mingw-w64-ucrt-x86_64-python-dateutil
+          mingw-w64-ucrt-x86_64-python-pip
+          mingw-w64-ucrt-x86_64-libhandy
+          mingw-w64-ucrt-x86_64-python-cx-freeze
+          mingw-w64-ucrt-x86_64-python-pikepdf
 
     - name: Install pip-only dependencies
       shell: msys2 {0}
       run: |
         # These packages are not in MSYS2 repos — install via pip
-        /mingw64/bin/python3 -m pip install --user keyboard flake8
+        /ucrt64/bin/python3 -m pip install --user keyboard flake8
 
     - name: Syntax check
       shell: msys2 {0}
       run: |
-        /mingw64/bin/python3 -m py_compile pdfbooklet/pdfbooklet3.py pdfbooklet/files_chooser.py pdfbooklet/pdfarranger_embed.py
-        /mingw64/bin/python3 -m flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=pdfbooklet/pdfarranger --builtins=_ --ignore=F824
+        /ucrt64/bin/python3 -m py_compile pdfbooklet/pdfbooklet3.py pdfbooklet/files_chooser.py pdfbooklet/pdfarranger_embed.py
+        /ucrt64/bin/python3 -m flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=pdfbooklet/pdfarranger --builtins=_ --ignore=F824
 
     - name: Build Windows portable ZIP
       shell: msys2 {0}
       run: |
-        /mingw64/bin/python3 setup_win32.py bdist_zip
+        /ucrt64/bin/python3 setup_win32.py bdist_zip
 
     - name: Upload Windows Artifact
       uses: actions/upload-artifact@v4
