@@ -1228,6 +1228,8 @@ class gtkGui(TxtOnly):
         #autoconnect signals for self functions
         self.widgets.connect_signals(self)
         self.arw["drawingarea1"].connect('draw', self.OnDraw)
+        self.arw["button3"].connect("clicked", self.chooseOutputFile)
+        self.addSaveAndPrintButtons()
 
         self.autoscale = self.arw["autoscale"]
         self.area = self.arw["drawingarea1"]
@@ -3752,7 +3754,13 @@ class gtkGui(TxtOnly):
 
 
 
-    def go(self, button, preview = -1) :
+    def go(self, button, preview = -1, output_override = None, open_after = True) :
+        # output_override : full path chosen by the user (Save as / Print). When given,
+        #                   the output field and the "overwrite" prompt are bypassed
+        #                   (the file chooser already asked for confirmation).
+        # open_after      : when False the "Show Pdf" option is ignored (used by Print).
+        self.last_output = None
+        ar_pages = ar_layout = ar_cahiers = None
 
         if self.readGui() :
             if self.render.parsePageSelection() :
@@ -3761,7 +3769,9 @@ class gtkGui(TxtOnly):
                 if ar_pages != None :
                     # Verify that the output file may be written to
 
-                    if app.arw["entry2"].get_text() == "" :
+                    if output_override :
+                        outputFile = output_override
+                    elif app.arw["entry2"].get_text() == "" :
                         inputFile = inputFiles_a[1]
                         inputFile_name = os.path.splitext(inputFile)[0]
                         outputFile = inputFile_name + "-bklt.pdf"
@@ -3782,7 +3792,7 @@ class gtkGui(TxtOnly):
                         outputFile = outputFile.replace("%E", inputFile_ext)
 
                     if preview == -1 :
-                        if os.path.isfile(outputFile) :
+                        if os.path.isfile(outputFile) and not output_override :
                             if app.overwrite.get_active() == 0 :
                                 answer_b = askyesno(_("File existing"), _("The outputfile already exists \n" \
                                 "overWrite ? " ))
@@ -3791,16 +3801,171 @@ class gtkGui(TxtOnly):
 
 
                         if self.render.createNewPdf(ar_pages, ar_layout, ar_cahiers, outputFile, preview) :
-                            if self.arw["show"].get_active() == 1 :
+                            self.last_output = outputFile
+                            if open_after and self.arw["show"].get_active() == 1 :
 
-                                if 'linux' in sys.platform :
-                                    subprocess.Popen(["xdg-open", outputFile], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                else:
-                                    os.startfile(outputFile)
+                                try :
+                                    if 'linux' in sys.platform :
+                                        subprocess.Popen(["xdg-open", outputFile], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                    else:
+                                        os.startfile(outputFile)
+                                except OSError :
+                                    pass        # no PDF viewer available : the file is saved anyway
 
         return [ar_pages, ar_layout, ar_cahiers]
 
 
+
+    # ------------------------------------------------------------------
+    #  Save booklet as a new PDF / Print booklet
+    # ------------------------------------------------------------------
+    def _default_output_name(self) :
+        """Return (folder, filename) suggested for the booklet PDF."""
+        try :
+            first = inputFiles_a[1]
+            folder, name = os.path.split(first)
+            return folder, os.path.splitext(name)[0] + "-bklt.pdf"
+        except Exception :
+            return os.path.expanduser("~"), "booklet.pdf"
+
+    def _has_input(self) :
+        try :
+            return os.path.isfile(inputFiles_a[1])
+        except Exception :
+            alert(_("Please open a PDF file first (Files menu)."))
+            return False
+
+    def chooseOutputFile(self, widget = None) :
+        """'...' button next to the output field : pick the output file name."""
+        folder, name = self._default_output_name()
+        chooser = Gtk.FileChooserDialog(title = _("Output file"),
+                                        parent = self.arw["window1"],
+                                        action = Gtk.FileChooserAction.SAVE)
+        chooser.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                            Gtk.STOCK_SAVE, Gtk.ResponseType.ACCEPT)
+        chooser.set_do_overwrite_confirmation(True)
+        chooser.set_current_folder(folder)
+        chooser.set_current_name(name)
+        pdf_filter = Gtk.FileFilter()
+        pdf_filter.set_name("PDF")
+        pdf_filter.add_pattern("*.pdf")
+        chooser.add_filter(pdf_filter)
+        if chooser.run() == Gtk.ResponseType.ACCEPT :
+            path = chooser.get_filename()
+            if not path.lower().endswith(".pdf") :
+                path += ".pdf"
+            self.arw["entry2"].set_text(path)
+        chooser.destroy()
+
+    def saveBookletAs(self, widget = None) :
+        """Ask for a file name and write the booklet as a new PDF."""
+        if not self._has_input() :
+            return
+        folder, name = self._default_output_name()
+        chooser = Gtk.FileChooserDialog(title = _("Save booklet as new PDF"),
+                                        parent = self.arw["window1"],
+                                        action = Gtk.FileChooserAction.SAVE)
+        chooser.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                            Gtk.STOCK_SAVE, Gtk.ResponseType.ACCEPT)
+        chooser.set_do_overwrite_confirmation(True)
+        chooser.set_current_folder(folder)
+        chooser.set_current_name(name)
+        pdf_filter = Gtk.FileFilter()
+        pdf_filter.set_name("PDF")
+        pdf_filter.add_pattern("*.pdf")
+        chooser.add_filter(pdf_filter)
+        response = chooser.run()
+        path = chooser.get_filename()
+        chooser.destroy()
+        if response != Gtk.ResponseType.ACCEPT or not path :
+            return
+        if not path.lower().endswith(".pdf") :
+            path += ".pdf"
+        self.go(None, output_override = path)
+        if self.last_output :
+            self.arw["status"].set_text(_("Saved : %s") % path)
+        else :
+            alert(_("The booklet could not be saved."))
+
+    def printBooklet(self, widget = None) :
+        """Build the booklet in a temporary PDF and send it to the print dialog."""
+        if not self._has_input() :
+            return
+        fd, tmp_path = tempfile.mkstemp(suffix = "-booklet.pdf")
+        os.close(fd)
+        self.go(None, output_override = tmp_path, open_after = False)
+        if not self.last_output :
+            alert(_("The booklet could not be created for printing."))
+            try : os.remove(tmp_path)
+            except OSError : pass
+            return
+
+        try :
+            doc = Poppler.Document.new_from_file(GLib.filename_to_uri(tmp_path, None), None)
+        except Exception :
+            printExcept()
+            alert(_("The booklet could not be loaded for printing."))
+            try : os.remove(tmp_path)
+            except OSError : pass
+            return
+
+        n_pages = doc.get_n_pages()
+        op = Gtk.PrintOperation()
+        op.set_n_pages(n_pages)
+        op.set_use_full_page(True)
+        op.set_unit(Gtk.Unit.POINTS)
+        op.set_job_name(os.path.basename(self._default_output_name()[1]))
+        op.set_embed_page_setup(True)
+        op.set_default_page_setup(Gtk.PageSetup())
+        settings = getattr(self, "print_settings", None)
+        if settings is not None :
+            op.set_print_settings(settings)
+
+        def on_request_page_setup(operation, context, page_nr, setup) :
+            # follow each page's own orientation (booklet sheets are usually landscape)
+            w, h = doc.get_page(page_nr).get_size()
+            setup.set_orientation(Gtk.PageOrientation.LANDSCAPE if w > h
+                                  else Gtk.PageOrientation.PORTRAIT)
+
+        def on_draw_page(operation, context, page_nr) :
+            page = doc.get_page(page_nr)
+            pw, ph = page.get_size()
+            cw, ch = context.get_width(), context.get_height()
+            ratio = min(cw / pw, ch / ph)
+            cr = context.get_cairo_context()
+            cr.translate((cw - pw * ratio) / 2.0, (ch - ph * ratio) / 2.0)
+            cr.scale(ratio, ratio)
+            page.render_for_printing(cr)
+
+        def on_done(operation, result) :
+            if result == Gtk.PrintOperationResult.APPLY :
+                self.print_settings = operation.get_print_settings()
+            try : os.remove(tmp_path)
+            except OSError : pass
+
+        op.connect("request-page-setup", on_request_page_setup)
+        op.connect("draw-page", on_draw_page)
+        op.connect("done", on_done)
+        try :
+            op.run(Gtk.PrintOperationAction.PRINT_DIALOG, self.arw["window1"])
+        except GLib.Error as e :
+            alert(_("Printing failed : %s") % e.message)
+            try : os.remove(tmp_path)
+            except OSError : pass
+
+    def addSaveAndPrintButtons(self) :
+        """Add 'Save as...' and 'Print...' buttons beside the Go button."""
+        go_button = self.arw["button4"]
+        box = go_button.get_parent()
+        pos = box.child_get_property(go_button, "position") + 1
+        for label, handler in ((_("Save as..."), self.saveBookletAs),
+                               (_("Print..."), self.printBooklet)) :
+            btn = Gtk.Button(label = label)
+            btn.connect("clicked", handler)
+            btn.show()
+            box.pack_start(btn, True, True, 0)
+            box.reorder_child(btn, pos)
+            pos += 1
 
 
     def readConditions(self) :

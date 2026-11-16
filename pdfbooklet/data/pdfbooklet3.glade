@@ -692,6 +692,24 @@ Example :
                       </object>
                     </child>
                     <child>
+                      <object class="GtkMenuItem" id="menuSaveBookletPdf">
+                        <property name="label" translatable="yes">Save booklet as _PDF ...</property>
+                        <property name="visible">True</property>
+                        <property name="can_focus">False</property>
+                        <property name="use_underline">True</property>
+                        <signal name="activate" handler="saveBookletAs" swapped="no"/>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkMenuItem" id="menuPrintBooklet">
+                        <property name="label" translatable="yes">_Print booklet ...</property>
+                        <property name="visible">True</property>
+                        <property name="can_focus">False</property>
+                        <property name="use_underline">True</property>
+                        <signal name="activate" handler="printBooklet" swapped="no"/>
+                      </object>
+                    </child>
+                    <child>
                       <object class="GtkSeparatorMenuItem" id="menuitem7">
                         <property name="visible">True</property>
                         <property name="can_focus">False</property>
