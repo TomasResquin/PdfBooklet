@@ -1230,6 +1230,7 @@ class gtkGui(TxtOnly):
         self.arw["drawingarea1"].connect('draw', self.OnDraw)
         self.arw["button3"].connect("clicked", self.chooseOutputFile)
         self.addSaveAndPrintButtons()
+        self.setupDragAndDrop()
 
         self.autoscale = self.arw["autoscale"]
         self.area = self.arw["drawingarea1"]
@@ -3952,6 +3953,63 @@ class gtkGui(TxtOnly):
             alert(_("Printing failed : %s") % e.message)
             try : os.remove(tmp_path)
             except OSError : pass
+
+    # ------------------------------------------------------------------
+    #  Drag and drop : drop PDF files on the main window to open them
+    # ------------------------------------------------------------------
+    def setupDragAndDrop(self) :
+        win = self.arw["window1"]
+        targets = [Gtk.TargetEntry.new("text/uri-list", 0, 0)]
+        win.drag_dest_set(Gtk.DestDefaults.ALL, targets, Gdk.DragAction.COPY)
+        win.connect("drag-data-received", self.on_files_dropped)
+
+    def on_files_dropped(self, widget, context, x, y, data, info, time) :
+        uris = data.get_uris()
+        if not uris :
+            uris = [l.strip() for l in (data.get_text() or "").splitlines() if l.strip()]
+        paths = []
+        for uri in uris :
+            try :
+                path = Gio.File.new_for_uri(uri).get_path()
+            except Exception :
+                path = None
+            if path :
+                paths.append(path)
+        self.openDroppedFiles(paths)
+
+    def openDroppedFiles(self, paths) :
+        """Open the dropped PDF files (they replace the current input files)."""
+        global inputFiles_a
+        pdfs = [p for p in paths if p.lower().endswith(".pdf") and os.path.isfile(p)]
+        if not pdfs :
+            alert(_("Please drop PDF files."))
+            return False
+
+        previous = inputFiles_a
+        inputFiles_a = {}
+        for i, path in enumerate(pdfs) :
+            inputFiles_a[i + 1] = path
+        try :
+            ini.loadPdfFiles()
+        except Exception :
+            printExcept()
+            alert(_("This file could not be opened : %s") % pdfs[0])
+            inputFiles_a = previous
+            return False
+
+        self.mru(inputFiles_a, "manager")
+        if self.arranger_view :
+            self.arranger_view.model.clear()
+            self.arranger_view.pdfqueue = []
+            self.arranger_view.nfile = 0
+            for key in inputFiles_a :
+                self.arranger_view.add_pdf_pages(inputFiles_a[key])
+            self.arranger_view.rendering_thread.pdfqueue = self.arranger_view.pdfqueue
+
+        app.selection_s = ""
+        self.arw["previewEntry"].set_text("1")
+        self.previewUpdate()
+        return True
 
     def addSaveAndPrintButtons(self) :
         """Add 'Save as...' and 'Print...' buttons beside the Go button."""
